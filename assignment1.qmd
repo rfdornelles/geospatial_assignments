@@ -1,8 +1,6 @@
 ---
 title: "Geospatial Analysis for Data Science 2025 - Assignment 1"
 author: 
-  - "Luis Fernando Ramízes Ruiz" 
-  - "Montserrat Lopez Perez" 
   - "Rodrigo Dornelles"
 format: html
 editor: visual
@@ -120,3 +118,5 @@ tibble::tibble(
 ```
 
 # 2. Explain in a few sentences, why these results are different. Which is the least correct?
+
+The differences are due to the way the projection of Earth's surface is transformed and, also, the difference in the calculation method. There's little difference among a, c, and d and a large difference in b (Pseudo-Mercator). This last is also the least correct, since the way the projection occurs is not appropriate for making spatial operations.
