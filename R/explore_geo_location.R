@@ -185,3 +185,68 @@ ggplot(deaths_map) +
     plot.title    = element_text(hjust = .5, face = "bold", size = 15),
     plot.subtitle = element_text(hjust = .5)
   )
+
+
+##### try to plot buffer zones 
+buffer_m   <- 500
+pal_option <- "inferno"
+
+# 1 ─ buffers individuais
+buffers <- df_spatial_join |>
+  sf::st_buffer(dist = buffer_m)
+
+# 2 ─ contar óbitos dentro de cada buffer
+buffers$deaths_in_buf <- lengths(sf::st_intersects(buffers, df_spatial_join))
+
+# 3 ─ classificar *incluindo zero*
+buffers <- buffers |>
+  dplyr::mutate(
+    faixa = cut(
+      deaths_in_buf,
+      breaks  = c(-Inf, 0, 1, 3, 5, 10, Inf),   # agora tem 0
+      right   = FALSE,
+      labels  = c("0", "1", "2–3", "4–5", "6–10", "11+")
+    )
+  )
+
+# 4 ─ dissolver por faixa *e* cortar pelo município
+city_union <- sf::st_union(sp_distritos)
+
+buffers_diss <- buffers |>
+  dplyr::group_by(faixa) |>
+  dplyr::summarise(do_union = TRUE) |>
+  sf::st_intersection(city_union)        # evita spill para fora
+
+# 5 ─ mapa -------------------------------------------------------------
+ggplot() +
+  # fundo do município (cinza claro) para referência
+  geom_sf(data = city_union, fill = "grey95", colour = NA) +
+  
+  # buffers
+  geom_sf(data = buffers_diss,
+          aes(fill = faixa),
+          colour = NA, alpha = 0.85) +
+  
+  # contorno distritos
+  geom_sf(data = sp_distritos,
+          fill = NA, colour = "white", linewidth = .35) +
+  
+  scale_fill_viridis_d(
+    option    = pal_option,
+    direction = -1,
+    name      = glue::glue("Mortes\na ≤{buffer_m/1000} km")
+  ) +
+  
+  coord_sf(crs = sf::st_crs(sp_distritos), expand = FALSE) +
+  labs(
+    title    = glue::glue("Mapa de calor com buffer-zones de {buffer_m} m"),
+    subtitle = "Cores indicam quantas mortes existem dentro do raio",
+    caption  = "Fonte: df_spatial_join"
+  ) +
+  theme_void(base_size = 11) +
+  theme(
+    plot.title    = element_text(hjust = .5, face = "bold", size = 15),
+    plot.subtitle = element_text(hjust = .5),
+    legend.key.width = unit(0.5, "cm")
+  )
+
