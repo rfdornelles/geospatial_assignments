@@ -162,4 +162,89 @@ df_clean %>%
   coord_flip() +
   labs(title = "Top 10 Types of Locations in Fatal Interventions", x = "Type of Location", y = "Count") +
   theme_minimal()
+#tablas para entender las variables categóricas 
+table(df_clean$sexo_pessoa)
+table(df_clean$situacao)
+table(df_clean$coorporacao)
+table(df_clean$desc_tipolocal)
+#some cross-tabulations 
 
+table(df_clean$sexo_pessoa, df_clean$situacao)
+
+### analysis suggested by GPT 
+library(ggmap)
+library(ggplot2)
+library(MASS)
+
+summary(df_clean$latitude)
+names(df_clean)
+
+library(dplyr)
+
+# Extract coordinates explicitly using dplyr
+coords <- df_clean %>%
+  filter(!is.na(latitude) & !is.na(longitude)) %>%
+  dplyr::select(longitude, latitude)
+
+
+# 1.2 Compute 2D KDE
+kde2d_out <- with(coords, MASS::kde2d(longitude, latitude, n = 200))
+
+# 1.3 Convert to data.frame for plotting
+kde_df <- data.frame(
+  expand.grid(lon = kde2d_out$x, lat = kde2d_out$y),
+  density = as.vector(kde2d_out$z)
+)
+
+# plot a map
+# 
+# 
+distritos <- st_read("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data-raw/shapefile_distrito/SIRGAS_SHP_distrito.shp")
+
+# Step 1: Convert to sf object using WGS84 (standard GPS system)
+
+
+df_sf <- df_clean %>%
+  filter(!is.na(latitude) & !is.na(longitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+# Step 2: Reproject to SIRGAS2000 / UTM zone 23S (EPSG:31983)
+df_sf <- st_transform(df_sf, crs = 31983)
+
+# Step 3 (Optional): Preview coordinate range or bounding box
+print(st_bbox(df_sf))
+
+# Step 4: Plot spatial points
+ggplot() +
+  geom_sf(data = df_sf, aes(color = situacao), alpha = 0.6, size = 1) +
+  labs(title = "Police-Related Deaths in São Paulo",
+       subtitle = "Projected in UTM / SIRGAS2000 Zone 23S (EPSG:31983)",
+       color = "Victim Status") +
+  theme_minimal()
+
+
+
+# 2. Reproject to ensure EPSG:31983 (usually already correct, but just in case)
+# 2. Manually set original CRS to SIRGAS2000 / UTM zone 23S (EPSG:31983)
+st_crs(distritos) <- 31983
+distritos <- st_transform(distritos, crs = 31983)
+
+# 3. Clean and convert your data to sf object
+df_sf <- df_clean %>%
+  filter(!is.na(latitude) & !is.na(longitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = 31983)
+
+# 4. Spatial join: tag each incident with district info
+df_joined <- st_join(df_sf, distritos, join = st_within)
+
+# 5. Plot points over district map
+ggplot() +
+  geom_sf(data = distritos, fill = "white", color = "gray70") +
+  geom_sf(data = df_sf, aes(color = situacao), alpha = 0.7, size = 1) +
+  labs(
+    title = "Police‑Related Deaths in São Paulo",
+    subtitle = "Mapped over District Boundaries (SIRGAS2000)",
+    color = "Victim Status"
+  ) +
+  theme_minimal()
