@@ -115,3 +115,51 @@ ggplot(df_clean, aes(x = longitude, y = latitude)) +
   labs(title = "Map of Police-caused Deaths in São Paulo",
        x = "Longitude", y = "Latitude") +
   theme_minimal()
+
+df_clean %>%
+  count(situacao) %>%
+  ggplot(aes(x = reorder(situacao, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Cases by Police Situation", x = "Situation", y = "Count") +
+  theme_minimal()
+
+
+df_clean %>%
+  filter(profissao != "" & !is.na(profissao)) %>%
+  count(profissao, sort = TRUE) %>%
+  slice_max(n, n = 10) %>%
+  ggplot(aes(x = reorder(profissao, n), y = n)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  labs(title = "Top 10 Victim Professions", x = "Profession", y = "Count") +
+  theme_minimal()
+
+df_clean %>%
+  filter(logradouro != "" & !is.na(logradouro)) %>%
+  count(logradouro, sort = TRUE) %>%
+  slice_max(n, n = 10) %>%
+  ggplot(aes(x = reorder(logradouro, n), y = n)) +
+  geom_col(fill = "orange") +
+  coord_flip() +
+  labs(title = "Top 10 Locations by Number of Incidents", x = "Street", y = "Count") +
+  theme_minimal()
+df_clean %>%
+  filter(coorporacao != "" & !is.na(coorporacao)) %>%
+  count(coorporacao, sort = TRUE) %>%
+  ggplot(aes(x = reorder(coorporacao, n), y = n)) +
+  geom_col(fill = "firebrick") +
+  coord_flip() +
+  labs(title = "Cases by Police Force", x = "Corporation", y = "Number of Cases") +
+  theme_minimal()
+
+df_clean %>%
+  filter(desc_tipolocal != "" & !is.na(desc_tipolocal)) %>%
+  count(desc_tipolocal, sort = TRUE) %>%
+  slice_max(n, n = 10) %>%
+  ggplot(aes(x = reorder(desc_tipolocal, n), y = n)) +
+  geom_col(fill = "mediumpurple") +
+  coord_flip() +
+  labs(title = "Top 10 Types of Locations in Fatal Interventions", x = "Type of Location", y = "Count") +
+  theme_minimal()
+
