@@ -214,15 +214,591 @@ ggplot() +
   theme_minimal()
 
 ```
+###Additional information: shapefile with favela information 
+Hypothesis: more violence in favelas, correlated with income and public services quality. 
 
 ```{r, warning=FALSE}
+library(sf)
+library(dplyr)
+
+# Read favela shapefile
+favelas <- st_read("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data-raw/SIRGAS_SHP_favela/SIRGAS_SHP_favela.shp", quiet = TRUE)
+
+# Check CRS and basic structure
+print(st_crs(favelas))
+glimpse(favelas)
+
+```
+
+```{r, warning=FALSE}
+st_crs(favelas) <- 31983
+ggplot() +
+  geom_sf(data = distritos, fill = "white", color = "grey50") +
+  geom_sf(data = favelas, fill = "red", alpha = 0.4, color = NA) +
+  labs(title = "Overlay of Favelas on Districts") +
+  theme_minimal()
+
+```
+Let's join both info 
+
+```{r, warning=FALSE}
+library(sf)
+library(dplyr)
+
+# Step 1: Convert police deaths into spatial points
+deaths_sf <- df_clean %>%
+  filter(!is.na(longitude), !is.na(latitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%  # WGS84
+  st_transform(crs = 31983)  # Match to favela projection
+
+# Step 2: Spatial join to identify deaths that occurred in favelas
+deaths_in_favela <- st_join(deaths_sf, favelas, join = st_within)
+
+# Step 3: Create flag variable for whether death occurred in a favela
+df_clean$in_favela <- df_clean$num_bo %in% deaths_in_favela$num_bo
+
+```
+
+
+```{r, warning=FALSE}
+table(df_clean$in_favela)
+df_clean %>%
+  group_by(in_favela) %>%
+  summarise(mean_age = mean(as.numeric(idade_pessoa), na.rm = TRUE),
+            count = n())
+ggplot() +
+  geom_sf(data = favelas, fill = "gray90", color = "gray50") +
+  geom_sf(data = deaths_sf, aes(color = df_clean$in_favela), size = 1, alpha = 0.7) +
+  scale_color_manual(values = c("FALSE" = "blue", "TRUE" = "red")) +
+  labs(color = "Occurred in Favela", title = "Police-related Deaths in São Paulo") +
+  theme_minimal()
+
+```
+
+
+```{r, warning=FALSE}
+library(ggplot2)
+library(sf)
+library(dplyr)
+
+# Reproject to common CRS
+distritos_wgs84 <- st_transform(distritos, 4326)
+favelas_wgs84 <- st_transform(favelas, 4326)
+deaths_wgs84 <- st_transform(deaths_sf, 4326)
+
+# Spatial join: add favela info to deaths
+deaths_joined <- st_join(deaths_wgs84, favelas_wgs84, join = st_within)
+
+# Add a column indicating whether the death occurred in a favela
+deaths_joined <- deaths_joined %>%
+  mutate(in_favela = !is.na(fv_nome))
+
+# Plot map
+ggplot() +
+  geom_sf(data = favelas_wgs84, fill = "darkred", alpha = 0.3, color = NA) +
+  geom_sf(data = deaths_joined, aes(color = in_favela), size = 1.2, alpha = 0.7) +
+  scale_color_manual(
+    values = c("TRUE" = "red", "FALSE" = "blue"),
+    labels = c("Outside Favela", "Inside Favela"),
+    name = "Location of Death"
+  ) +
+  labs(
+    title = "Police-Related Deaths in São Paulo",
+    subtitle = "With Favela Boundaries (SIRGAS2000)",
+    x = "Longitude", y = "Latitude"
+  ) +
+  theme_minimal()
+
+
+```
+
+
+```{r, warning=FALSE}
+library(sf)
+library(ggplot2)
+library(dplyr)
+
+# 1. Verify the districts object
+print(distritos)            # should show an sf with POLYGON/MULTIPOLYGON
+print(st_crs(distritos))    # should be EPSG:31983
+
+# 2. Reproject all layers to a common CRS (WGS84 for plotting)
+distritos_wgs84 <- st_transform(distritos, 4326)
+favelas_wgs84   <- st_transform(favelas,   4326)
+deaths_wgs84    <- st_transform(deaths_sf,  4326)
+
+# 3. Quick diagnostic plot of districts alone
+ggplot(distritos_wgs84) +
+  geom_sf(fill = NA, color = "black", size = 0.4) +
+  labs(title = "District Boundaries — Diagnostic Plot") +
+  theme_void()
+
+# If you see the boundaries above, proceed. If not, the shapefile may be corrupted or empty.
+
+# 4. Now build the combined map
+ggplot() +
+  # a) Districts as outline only (no fill)
+  geom_sf(data = distritos_wgs84, fill = NA, color = "gray40", size = 0.4) +
+  # b) Favelas semi‑transparent
+  geom_sf(data = favelas_wgs84, fill = "red", alpha = 0.3, color = NA) +
+  # c) Deaths, inside vs outside favela
+  geom_sf(data = deaths_joined, aes(color = in_favela), size = 1) +
+  scale_color_manual(
+    values = c("TRUE" = "red", "FALSE" = "black"),
+    labels = c("Inside Favela", "Outside Favela"),
+    name = ""
+  ) +
+  labs(
+    title = "Police-Related Deaths in São Paulo",
+    subtitle = "District Boundaries, Favelas, and Death Locations"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+
+
+```{r, warning=FALSE}
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(viridis)
+library(patchwork)
+
+# --- Load shapefiles (already done before, adjust paths if needed) ---
+distritos <- st_read("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data-raw/shapefile_distrito/SIRGAS_SHP_distrito.shp", quiet = TRUE)
+favelas <- st_read("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data-raw/SIRGAS_SHP_favela/SIRGAS_SHP_favela.shp", quiet = TRUE)
+
+# Set CRS if missing and transform to SIRGAS2000 / UTM zone 23S (EPSG:31983)
+if (is.na(st_crs(favelas))) {
+  st_crs(favelas) <- 31983
+}
+if (is.na(st_crs(distritos))) {
+  st_crs(distritos) <- 31983
+}
+
+# Ensure they're all in the same CRS
+
+deaths_sf <- st_as_sf(df_clean, coords = c("longitude", "latitude"), crs = 4326)
+deaths_sf <- st_transform(deaths_sf, crs = 31983)
+
+# Set CRS for favelas (if not set already)
+favelas <- st_transform(favelas, crs = 31983)
+
+# Set CRS for distritos (if not set already)
+distritos <- st_transform(distritos, crs = 31983)
+
+# --- Perform Spatial Joins ---
+# Join police deaths with favelas, creating a new variable 'in_favela'
+deaths_joined <- st_join(deaths_sf, favelas, join = st_within) %>%
+  mutate(in_favela = !is.na(fv_nome)) %>%  # 'fv_nome' is the favela name column
+  # Join with district information (ds_nome is the district name)
+  st_join(dplyr::select(distritos, ds_nome), join = st_within)
+
+# --- Aggregating deaths per district and favela status ---
+district_summary <- deaths_joined %>%
+  st_drop_geometry() %>%
+  count(ds_nome, in_favela) %>%
+  complete(ds_nome, in_favela = c(TRUE, FALSE), fill = list(n = 0))
+
+# --- Merge with district shapefile for visualization ---
+districts_with_deaths <- dplyr::select(distritos, ds_nome) %>%
+  left_join(district_summary, by = "ds_nome")
+
+# --- Visualizing with a map ---
+# Create a heatmap of deaths inside and outside favelas per district
+ggplot() +
+  geom_sf(data = districts_with_deaths, aes(fill = n)) +  # Fill by the number of deaths
+  scale_fill_viridis_c() +
+  theme_minimal() +
+  labs(title = "Police Deaths in São Paulo by District and Favela Status",
+       fill = "Number of Deaths") +
+  theme(legend.position = "bottom")
+
+
+```
+
+
+
+```{r, warning=FALSE}
+
+# Join police deaths with favelas, creating a new variable 'in_favela'
+deaths_joined <- st_join(deaths_sf, favelas, join = st_within) %>%
+  mutate(in_favela = !is.na(fv_nome)) %>%  # 'fv_nome' is the favela name column
+  # Join with district information (ds_nome is the district name)
+  st_join(dplyr::select(distritos, ds_nome), join = st_within)
+
+# --- Aggregating deaths per district and favela status ---
+district_summary <- deaths_joined %>%
+  st_drop_geometry() %>%
+  count(ds_nome, in_favela) %>%
+  complete(ds_nome, in_favela = c(TRUE, FALSE), fill = list(n = 0)) %>%
+  group_by(ds_nome) %>%
+  mutate(total_deaths = sum(n)) %>%
+  ungroup() %>%
+  mutate(percentage = (n / total_deaths) * 100)
+
+# --- Merge with district shapefile for visualization ---
+districts_with_deaths <- dplyr::select(distritos, ds_nome) %>%
+  left_join(district_summary, by = "ds_nome")
+
+# --- Visualizing with a map ---
+# --- Visualizing with a map ---
+# Create a heatmap of the percentage of deaths inside and outside favelas per district
+ggplot() +
+  geom_sf(data = districts_with_deaths, aes(fill = percentage)) +  # Fill by percentage of deaths
+  scale_fill_viridis_c(limits = c(0, 25), option = "magma") +  # Set limits to max of 25%
+  theme_minimal() +
+  labs(title = "Percentage of Police Deaths in São Paulo \n 
+       by District and Favela Status",
+       fill = "Percentage of Deaths") +
+  theme(legend.position = "bottom")
+
+```
+
+Spatial autocorrelation
+
+```{r, warning=FALSE}
+library(sf)
+library(dplyr)
+library(spdep)
+
+# Count total and favela deaths per district
+deaths_by_dist <- deaths_joined %>%
+  st_drop_geometry() %>%
+  group_by(ds_nome, in_favela) %>%
+  summarise(count = n()) %>%
+  tidyr::pivot_wider(names_from = in_favela, values_from = count, values_fill = 0) %>%
+  rename(out_favela = `FALSE`, in_favela = `TRUE`) %>%
+  mutate(total = in_favela + out_favela,
+         pct_favela = in_favela / total)
+
+# Merge with spatial data
+distritos_joined <- distritos %>%
+  left_join(deaths_by_dist, by = c("ds_nome" = "ds_nome"))
+
+
+```
+
+```{r, warning=FALSE}
+# Create neighbors and weights
+nb <- poly2nb(distritos_joined)
+lw <- nb2listw(nb, style = "W")
+
+# Moran’s I for % of deaths in favelas
+moran_test <- moran.test(distritos_joined$pct_favela, lw)
+print(moran_test)
+
+
+```
+
+```{r, warning=FALSE}
+library(sf)
+library(dplyr)
+library(tidyr)
+
+# Aggregate police deaths by district and whether in favela
+deaths_by_dist <- deaths_joined %>%
+  st_drop_geometry() %>%
+  group_by(ds_nome, in_favela) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = in_favela, values_from = count, values_fill = 0) %>%
+  rename(out_favela = `FALSE`, in_favela = `TRUE`) %>%
+  mutate(total = in_favela + out_favela,
+         pct_favela = ifelse(total > 0, in_favela / total, 0))
+
+# Join with district polygons
+distritos_joined <- distritos %>%
+  left_join(deaths_by_dist, by = c("ds_nome"))
+
+library(spdep)
+
+# Neighborhood structure and spatial weights
+nb <- poly2nb(distritos_joined)
+lw <- nb2listw(nb, style = "W")
+
+# Moran's I for % of police deaths inside favelas
+moran_global <- moran.test(distritos_joined$pct_favela, lw)
+print(moran_global)
+
+# Local Moran's I
+lisa <- localmoran(distritos_joined$pct_favela, lw)
+
+# Add to dataframe
+distritos_joined <- distritos_joined %>%
+  mutate(
+    local_I = lisa[, "Ii"],
+    local_p = lisa[, "Pr(z != E(Ii))"]
+  )
+
+
+```
+Classify clusters 
+```{r, warning=FALSE}
+library(dplyr)
+
+# Check unique values of ds_nome in both datasets
+unique(distritos_joined$ds_nome)
+unique(death_counts$ds_nome)
+
+# Remove 'n_deaths' column if it exists
+if ("n_deaths" %in% colnames(distritos_joined)) {
+  distritos_joined <- dplyr::select(distritos_joined, -n_deaths)
+}
+colnames(distritos_joined)
+
+
+# Remove rows with NA in 'ds_nome' from both datasets
+death_counts <- death_counts %>%
+  filter(!is.na(ds_nome))
+
+distritos_joined <- distritos_joined %>%
+  filter(!is.na(ds_nome))
+
+# Perform the left join to add the 'n_deaths' column from 'death_counts'
+distritos_joined <- distritos_joined %>%
+  left_join(death_counts, by = "ds_nome")
+
+# Replace any NA values in 'n_deaths' with 0
+distritos_joined <- distritos_joined %>%
+  mutate(n_deaths = replace_na(n_deaths, 0))
+
+# Check the result
+head(distritos_joined)
+
+
+```
+
+```{r, warning=FALSE}
+library(dplyr)
+library(sf)
+library(tidyr)
+
+# Perform the left join
+distritos_joined <- distritos_joined %>%
+  left_join(death_counts, by = "ds_nome")
+
+# Check the first few rows to ensure the `n_deaths` column is now present
+head(distritos_joined)
+
+
+```
+
+```{r, warning=FALSE}
+library(sf)
+library(dplyr)
+library(tidyr)
+
+# 1. Start fresh from your original district sf
+distritos_base <- st_read("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data-raw/shapefile_distrito/SIRGAS_SHP_distrito.shp") %>%
+  st_set_crs(31983) %>%
+  mutate(ds_nome = toupper(ds_nome))  # normalize case
+
+# 2. Aggregate deaths per district 
+deaths_by_district <- st_join(deaths_sf, distritos_base, join = st_within) %>%
+  st_drop_geometry() %>%
+  mutate(ds_nome = toupper(ds_nome)) %>%
+  count(ds_nome, name = "n_deaths")
+
+# 3. Merge counts into districts and compute rate
+distritos_joined <- distritos_base %>%
+  left_join(deaths_by_district, by = "ds_nome") %>%
+  mutate(
+    n_deaths   = replace_na(n_deaths, 0),
+    death_rate = n_deaths / ds_areakm
+  )
+
+# 4. Recompute Moran’s I (if needed)
+nb  <- poly2nb(distritos_joined)
+lw  <- nb2listw(nb, style = "W")
+lisa <- localmoran(distritos_joined$death_rate, lw)
+distritos_joined <- distritos_joined %>%
+  mutate(
+    local_I = lisa[, "Ii"],
+    local_p = lisa[, "Pr(z != E(Ii))"]
+  )
+
+# 5. Classify clusters
+mean_rate <- mean(distritos_joined$death_rate, na.rm = TRUE)
+distritos_joined <- distritos_joined %>%
+  mutate(
+    cluster_type = case_when(
+      local_I > 0 & death_rate > mean_rate & local_p < 0.05 ~ "High-High",
+      local_I > 0 & death_rate < mean_rate & local_p < 0.05 ~ "Low-Low",
+      local_I < 0 & death_rate > mean_rate & local_p < 0.05 ~ "High-Low",
+      local_I < 0 & death_rate < mean_rate & local_p < 0.05 ~ "Low-High",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+# 6. Visualize the LISA clusters
+library(ggplot2)
+cluster_palette <- c(
+  "High-High"      = "darkred",
+  "Low-Low"        = "darkblue",
+  "High-Low"       = "orange",
+  "Low-High"       = "skyblue",
+  "Not Significant"= "lightgrey"
+)
+
+ggplot(distritos_joined) +
+  geom_sf(aes(fill = cluster_type), color = "white", size = 0.2) +
+  scale_fill_manual(values = cluster_palette, name = "LISA Cluster") +
+  labs(
+    title    = "LISA Cluster Map of Police Death Rates",
+    subtitle = "São Paulo Districts",
+    caption  = "Cluster types: High-High, Low-Low, High-Low, Low-High"
+  ) +
+  theme_minimal()
+
+
+
+
+```
+#sanity check 
+```{r, warning=FALSE}
+# Total number of deaths
+total_deaths <- sum(deaths_by_district$n_deaths)
+total_deaths
+
+
+```
+Spatial Correlations 
+
+```{r, warning=FALSE}
+library(sf)
+library(dplyr)
+
+# 1. Convert df_clean to sf using its lat/long
+df_sf <- df_clean %>%
+  filter(!is.na(latitude) & !is.na(longitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = st_crs(distritos_base))
+
+# 2. Spatially join to pull in ds_nome from your districts
+df_sf <- st_join(
+  df_sf,
+  dplyr::select(distritos_base, ds_nome),
+  join = st_within
+)
+
+
+# 3. Now uppercase to standardize (if necessary)
+df_sf <- df_sf %>%
+  mutate(ds_nome = toupper(ds_nome))
+
+# 4. Aggregate your covariates by district
+covariates_by_district <- df_sf %>%
+  st_drop_geometry() %>%
+  group_by(ds_nome) %>%
+  summarize(
+    pct_black = mean(cor_pele == "Black",   na.rm = TRUE),
+    pct_white = mean(cor_pele == "White",   na.rm = TRUE),
+    avg_age   = mean(idade_pessoa,          na.rm = TRUE),
+    pct_favela = mean(in_favela == 1,       na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 5. Merge into distritos_joined
+distritos_joined <- distritos_joined %>%
+  left_join(covariates_by_district, by = "ds_nome") %>%
+  mutate(
+    across(c(pct_black, pct_white, avg_age, pct_favela),
+           ~ replace_na(.x, mean(.x, na.rm = TRUE)))
+  )
+
+
 
 ```
 
 ```{r, warning=FALSE}
 
+library(spatialreg)
+
+sem_fit <- errorsarlm(
+  death_rate ~ pct_favela + pct_black + pct_white + avg_age,
+  data  = distritos_joined,
+  listw = lw,
+  method = "eigen"
+)
+
+summary(sem_fit)
+
+
 ```
 
 ```{r, warning=FALSE}
+# 1. Bin ages
+df_sf <- df_sf %>%
+  filter(!is.na(idade_pessoa), idade_pessoa >= 15) %>%
+  mutate(
+    age_group = case_when(
+      idade_pessoa <= 25 ~ "15_25",
+      idade_pessoa <= 35 ~ "26_35",
+      TRUE               ~ "36_plus"
+    )
+  )
+
+# 2. Simplify cor_pele
+df_sf <- df_sf %>%
+  mutate(
+    cor_pele_simplified = case_when(
+      cor_pele %in% c("Parda", "Branca", "Preta") ~ cor_pele,
+      TRUE                                        ~ "Other"
+    )
+  )
+
+# 3. Aggregate proportions by district
+agg_vars <- df_sf %>%
+  st_drop_geometry() %>%
+  group_by(ds_nome) %>%
+  summarise(
+    pct_parda   = mean(cor_pele_simplified == "Parda", na.rm = TRUE),
+    pct_branca  = mean(cor_pele_simplified == "Branca", na.rm = TRUE),
+    pct_preta   = mean(cor_pele_simplified == "Preta", na.rm = TRUE),
+    pct_15_25   = mean(age_group == "15_25", na.rm = TRUE),
+    pct_26_35   = mean(age_group == "26_35", na.rm = TRUE),
+    pct_36_plus = mean(age_group == "36_plus", na.rm = TRUE)
+  )
+
+
+```
+
+```{r, warning=FALSE}
+distritos_joined <- distritos_joined %>%
+  left_join(agg_vars, by = "ds_nome")
+
+
+
+
+```
+
+```{r, warning=FALSE}
+
+
+sem_fit <- errorsarlm(
+  death_rate ~ pct_parda + pct_branca + pct_preta + pct_15_25 + pct_26_35,
+  data  = distritos_joined,
+  listw = lw,
+  method = "eigen"
+)
+
+summary(sem_fit)
+
+```
+
+```{r, warning=FALSE}
+
+
+```
+
+```{r, warning=FALSE}
+
+
+```
+
+```{r, warning=FALSE}
+
 
 ```
