@@ -16,6 +16,12 @@ Without normalization by population
 
 
 ```{r,warning=FALSE}
+library(dplyr)
+library(sf)
+library(ggplot2)
+library(tidyr)
+library(spdep)
+
 df_clean <- readRDS("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data/mortes_policia_clean.rds")
 
 # Step 1: Convert police deaths into spatial points
@@ -30,10 +36,6 @@ deaths_sf <- df_clean %>%
 
 
 ```{r, warning=FALSE}
-library(sf)
-library(dplyr)
-library(tidyr)
-library(spdep)
 
 # 1. Start fresh from your original district sf
 distritos_base <- st_read("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data-raw/shapefile_distrito/SIRGAS_SHP_distrito.shp") %>%
