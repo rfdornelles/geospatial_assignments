@@ -1,0 +1,126 @@
+---
+title: "Analysis_geospatial"
+author: "Luis Ramirez, Monse López, Rodrigo Dornelles"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+Without normalization by population
+
+
+```{r cars}
+df_clean <- readRDS("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data/mortes_policia_clean.rds")
+
+# Step 1: Convert police deaths into spatial points
+deaths_sf <- df_clean %>%
+  filter(!is.na(longitude), !is.na(latitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%  # WGS84
+  st_transform(crs = 31983)  # Match to favela projection
+
+
+```
+
+
+
+```{r cars}
+library(sf)
+library(dplyr)
+library(tidyr)
+library(spdep)
+
+# 1. Start fresh from your original district sf
+distritos_base <- st_read("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data-raw/shapefile_distrito/SIRGAS_SHP_distrito.shp") %>%
+  st_set_crs(31983) %>%
+  mutate(ds_nome = toupper(ds_nome))  # normalize case
+
+# 2. Aggregate deaths per district 
+deaths_by_district <- st_join(deaths_sf, distritos_base, join = st_within) %>%
+  st_drop_geometry() %>%
+  mutate(ds_nome = toupper(ds_nome)) %>%
+  count(ds_nome, name = "n_deaths")
+
+# 3. Merge counts into districts and compute rate
+distritos_joined <- distritos_base %>%
+  left_join(deaths_by_district, by = "ds_nome") %>%
+  mutate(
+    n_deaths   = replace_na(n_deaths, 0),
+    death_rate = n_deaths / ds_areakm
+  )
+
+# 4. Recompute Moran’s I (if needed)
+nb  <- poly2nb(distritos_joined)
+lw  <- nb2listw(nb, style = "W")
+lisa <- localmoran(distritos_joined$death_rate, lw)
+distritos_joined <- distritos_joined %>%
+  mutate(
+    local_I = lisa[, "Ii"],
+    local_p = lisa[, "Pr(z != E(Ii))"]
+  )
+
+# 5. Classify clusters
+mean_rate <- mean(distritos_joined$death_rate, na.rm = TRUE)
+distritos_joined <- distritos_joined %>%
+  mutate(
+    cluster_type = case_when(
+      local_I > 0 & death_rate > mean_rate & local_p < 0.05 ~ "High-High",
+      local_I > 0 & death_rate < mean_rate & local_p < 0.05 ~ "Low-Low",
+      local_I < 0 & death_rate > mean_rate & local_p < 0.05 ~ "High-Low",
+      local_I < 0 & death_rate < mean_rate & local_p < 0.05 ~ "Low-High",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+# 6. Visualize the LISA clusters
+library(ggplot2)
+cluster_palette <- c(
+  "High-High"      = "darkred",
+  "Low-Low"        = "darkblue",
+  "High-Low"       = "orange",
+  "Low-High"       = "skyblue",
+  "Not Significant"= "lightgrey"
+)
+
+ggplot(distritos_joined) +
+  geom_sf(aes(fill = cluster_type), color = "white", size = 0.2) +
+  scale_fill_manual(values = cluster_palette, name = "LISA Cluster") +
+  labs(
+    title    = "LISA Cluster Map of Police Death Rates",
+    subtitle = "São Paulo Districts",
+    caption  = "Cluster types: High-High, Low-Low, High-Low, Low-High"
+  ) +
+  theme_minimal()
+
+
+
+```
+
+
+```{r cars}
+
+
+
+```
+
+With normalization by population
+
+```{r cars}
+
+```
+
+
+
+```{r cars}
+
+```
+
+
+
+```{r cars}
+
+```
