@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
 ```
 
 ## R Markdown
@@ -14,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE)
 Without normalization by population
 
 
-```{r cars}
+```{r,warning=FALSE}
 df_clean <- readRDS("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data/mortes_policia_clean.rds")
 
 # Step 1: Convert police deaths into spatial points
@@ -28,7 +29,7 @@ deaths_sf <- df_clean %>%
 
 
 
-```{r cars}
+```{r, warning=FALSE}
 library(sf)
 library(dplyr)
 library(tidyr)
@@ -100,27 +101,180 @@ ggplot(distritos_joined) +
 
 ```
 
+## With normalization by population 
 
-```{r cars}
+```{r,warning=FALSE}
+data_norm <- st_read("../data/distritos_pop_2022.geojson")
+
+data_norm |> 
+  st_set_crs(31983) %>%
+  mutate(ds_nome = toupper(ds_nome))
+
+# 2. Aggregate deaths per district 
+deaths_by_district <- st_join(deaths_sf, data_norm, join = st_within) %>%
+  st_drop_geometry() %>%
+  mutate(ds_nome = toupper(ds_nome)) %>%
+  count(ds_nome, name = "n_deaths")
+
+# 3. Merge counts into districts and compute rate
+distritos_joined <- data_norm %>%
+  left_join(deaths_by_district, by = "ds_nome") %>%
+  mutate(
+    n_deaths   = replace_na(n_deaths, 0),
+    death_rate = n_deaths / pop_total
+  )
+
+# 4. Recompute Moran’s I (if needed)
+nb  <- poly2nb(distritos_joined)
+lw  <- nb2listw(nb, style = "W")
+lisa <- localmoran(distritos_joined$death_rate, lw)
+distritos_joined <- distritos_joined %>%
+  mutate(
+    local_I = lisa[, "Ii"],
+    local_p = lisa[, "Pr(z != E(Ii))"]
+  )
+
+# 5. Classify clusters
+mean_rate <- mean(distritos_joined$death_rate, na.rm = TRUE)
+distritos_joined <- distritos_joined %>%
+  mutate(
+    cluster_type = case_when(
+      local_I > 0 & death_rate > mean_rate & local_p < 0.05 ~ "High-High",
+      local_I > 0 & death_rate < mean_rate & local_p < 0.05 ~ "Low-Low",
+      local_I < 0 & death_rate > mean_rate & local_p < 0.05 ~ "High-Low",
+      local_I < 0 & death_rate < mean_rate & local_p < 0.05 ~ "Low-High",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+# 6. Visualize the LISA clusters
+library(ggplot2)
+cluster_palette <- c(
+  "High-High"      = "darkred",
+  "Low-Low"        = "darkblue",
+  "High-Low"       = "orange",
+  "Low-High"       = "skyblue",
+  "Not Significant"= "lightgrey"
+)
+
+ggplot(distritos_joined) +
+  geom_sf(aes(fill = cluster_type), color = "white", size = 0.2) +
+  scale_fill_manual(values = cluster_palette, name = "LISA Cluster") +
+  labs(
+    title    = "LISA Cluster Map of Police Death Rates",
+    subtitle = "São Paulo Districts",
+    caption  = "Cluster types: High-High, Low-Low, High-Low, Low-High"
+  ) +
+  theme_minimal()
 
 
 
 ```
 
-With normalization by population
+With normalization by population. Local Moran's I
 
-```{r cars}
+```{r, warning=FALSE}
+# Create neighbors and weights
+# Global Moran's I test
+global_moran <- moran.test(distritos_joined$death_rate, lw)
+
+# Print results
+print(global_moran)
+
+# Moran plot
+moran.plot(distritos_joined$death_rate, lw,
+           labels = distritos_joined$ds_nome,
+           main = "Moran Plot of Death Rate")
 
 ```
 
 
 
-```{r cars}
+```{r, warning=FALSE}
+
+library(spdep)
+
+# Build spatial weights from your existing spatial object
+nb <- poly2nb(distritos_joined)
+lw <- nb2listw(nb, style = "W")
+
+# Run the Local Moran's I test
+lisa <- localmoran(distritos_joined$death_rate, lw)
+
+# View the results
+head(lisa)
+
+
+```
+
+### spatial regression 
+
+
+```{r, warning=FALSE}
+library(sf)
+library(spdep)
+library(spatialreg)
+library(dplyr)
+
+# Remove rows with NA in any model variable
+# Baseline model: parda skin, over 35, 
+distritos_model <- distritos_joined %>%
+  drop_na(death_rate, pct_parda, pct_branca, pct_preta, pct_15_25, pct_26_35, pct_36_plus)
+
+nb <- poly2nb(distritos_model)
+lw <- nb2listw(nb, style = "W")
+
+lag_model <- lagsarlm(
+  death_rate ~ pct_branca + pct_preta + pct_15_25 + pct_26_35,
+  data = distritos_model,
+  listw = lw,
+  method = "eigen"
+)
+summary(lag_model)
+
+error_model <- errorsarlm(
+  death_rate ~ pct_branca + pct_preta + pct_15_25 + pct_26_35,
+  data = distritos_model,
+  listw = lw,
+  method = "eigen"
+)
+summary(error_model)
+
+ols_model <- lm(
+  death_rate ~ pct_branca + pct_preta + pct_15_25 + pct_26_35,
+  data = distritos_model
+)
+summary(ols_model)
+
+lm.LMtests(ols_model, lw, test = "all")  # Test for spatial dependence
+
+
 
 ```
 
 
 
-```{r cars}
+
+```{r, warning=FALSE}
+
+
+
+```
+
+
+
+
+```{r, warning=FALSE}
+
+
+
+```
+
+
+
+
+```{r, warning=FALSE}
+
+
 
 ```
