@@ -7,6 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(magrittr)
+library(sf)
 ```
 
 ## R Markdown
@@ -15,11 +17,11 @@ Without normalization by population
 
 
 ```{r cars}
-df_clean <- readRDS("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data/mortes_policia_clean.rds")
+df_clean <- readRDS("../data/mortes_policia_clean.rds")
 
 # Step 1: Convert police deaths into spatial points
 deaths_sf <- df_clean %>%
-  filter(!is.na(longitude), !is.na(latitude)) %>%
+  dplyr::filter(!is.na(longitude), !is.na(latitude)) %>%
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%  # WGS84
   st_transform(crs = 31983)  # Match to favela projection
 
@@ -35,7 +37,7 @@ library(tidyr)
 library(spdep)
 
 # 1. Start fresh from your original district sf
-distritos_base <- st_read("C:/Users/luisf/Desktop/Semester6/Geospatial_analysis/assignment2/geospatial_assignments/data-raw/shapefile_distrito/SIRGAS_SHP_distrito.shp") %>%
+distritos_base <- st_read("../data/distritos_pop_2022.geojson") %>%
   st_set_crs(31983) %>%
   mutate(ds_nome = toupper(ds_nome))  # normalize case
 
@@ -50,7 +52,7 @@ distritos_joined <- distritos_base %>%
   left_join(deaths_by_district, by = "ds_nome") %>%
   mutate(
     n_deaths   = replace_na(n_deaths, 0),
-    death_rate = n_deaths / ds_areakm
+    death_rate = n_deaths / pop_total,
   )
 
 # 4. Recompute Moran’s I (if needed)
@@ -86,7 +88,7 @@ cluster_palette <- c(
   "Not Significant"= "lightgrey"
 )
 
-ggplot(distritos_joined) +
+plot <- ggplot(distritos_joined) +
   geom_sf(aes(fill = cluster_type), color = "white", size = 0.2) +
   scale_fill_manual(values = cluster_palette, name = "LISA Cluster") +
   labs(
@@ -94,8 +96,11 @@ ggplot(distritos_joined) +
     subtitle = "São Paulo Districts",
     caption  = "Cluster types: High-High, Low-Low, High-Low, Low-High"
   ) +
+  ## add the name of the districts
+  geom_sf_text(aes(label = ds_nome), size = 2, color = "black", check_overlap = TRUE) +
   theme_minimal()
 
+plotly::ggplotly(plot)
 
 
 ```
