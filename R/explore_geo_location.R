@@ -9,9 +9,11 @@ df_mortes <- readr::read_rds("data/mortes_policia_clean.rds")
 
 ## load Sao Paulo districts
 # important: EPSG:SIRGAS2000 / UTM zone 23S (EPSG:31983)
-sp_distritos <- "data-raw/shapefile_distrito/SIRGAS_SHP_distrito.shp" |> 
-  sf::read_sf()  |> 
-  sf::st_set_crs(31983)
+# sp_distritos <- "data-raw/shapefile_distrito/SIRGAS_SHP_distrito.shp" |> 
+#   sf::read_sf()  |> 
+#   sf::st_set_crs(31983)
+sp_distritos <- "data/distritos_pop_2022.geojson" |> 
+  sf::read_sf()  
 
 
 sp_distritos
@@ -156,7 +158,9 @@ deaths_map <- sp_distritos |>
   dplyr::mutate(
     ds_areakm        = as.numeric(ds_areakm),       # garante numérico
     deaths_per_area  = n / ds_areakm,
-    deaths_per_area  = tidyr::replace_na(deaths_per_area, 0)   # distritos sem caso
+    deaths_per_area  = tidyr::replace_na(deaths_per_area, 0),   # distritos sem caso
+    deaths_per_hab = n / pop_total,
+    deaths_per_hab = tidyr::replace_na(deaths_per_hab, 0)        # distritos sem caso
   )
 
 # 3.  MAPA choropleth
@@ -177,6 +181,35 @@ ggplot(deaths_map) +
   #              check_overlap = TRUE) +
   labs(
     title    = "Mortes por km² nos distritos de São Paulo",
+    subtitle = "Período: df_spatial_join",
+    caption  = "Fonte: SSP - elaboração própria"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title    = element_text(hjust = .5, face = "bold", size = 15),
+    plot.subtitle = element_text(hjust = .5)
+  )
+
+
+######## trying to nornalize
+# 3.  MAPA choropleth
+ggplot(deaths_map) +
+  geom_sf(aes(fill = deaths_per_hab),
+          colour = "white", linewidth = .25) +
+  scale_fill_viridis_c(
+    option    = "mako",
+    direction = -1,
+    name      = "Mortes / km²",
+    trans     = "sqrt"          # p/ suavizar extremos
+  ) +
+  coord_sf(crs = sf::st_crs(sp_distritos)) +
+  ## add the name of districts
+  # geom_sf_text(aes(label = ds_nome),
+  #              size = 2.5,
+  #              colour = "white",
+  #              check_overlap = TRUE) +
+  labs(
+    title    = "Mortes por hab nos distritos de São Paulo",
     subtitle = "Período: df_spatial_join",
     caption  = "Fonte: SSP - elaboração própria"
   ) +
