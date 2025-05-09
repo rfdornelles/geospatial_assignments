@@ -188,6 +188,7 @@ coords <- df_clean %>%
   filter(!is.na(latitude) & !is.na(longitude)) %>%
   dplyr::select(longitude, latitude)
 
+distritos <- st_read("../data-raw/shapefile_distrito/SIRGAS_SHP_distrito.shp")
 
 # 2. Manually set original CRS to SIRGAS2000 / UTM zone 23S (EPSG:31983)
 st_crs(distritos) <- 31983
@@ -535,55 +536,8 @@ distritos_joined <- distritos_joined %>%
 
 ```
 Classify clusters 
-```{r, warning=FALSE}
-library(dplyr)
-
-# Check unique values of ds_nome in both datasets
-unique(distritos_joined$ds_nome)
-unique(death_counts$ds_nome)
-
-# Remove 'n_deaths' column if it exists
-if ("n_deaths" %in% colnames(distritos_joined)) {
-  distritos_joined <- dplyr::select(distritos_joined, -n_deaths)
-}
-colnames(distritos_joined)
 
 
-# Remove rows with NA in 'ds_nome' from both datasets
-death_counts <- death_counts %>%
-  filter(!is.na(ds_nome))
-
-distritos_joined <- distritos_joined %>%
-  filter(!is.na(ds_nome))
-
-# Perform the left join to add the 'n_deaths' column from 'death_counts'
-distritos_joined <- distritos_joined %>%
-  left_join(death_counts, by = "ds_nome")
-
-# Replace any NA values in 'n_deaths' with 0
-distritos_joined <- distritos_joined %>%
-  mutate(n_deaths = replace_na(n_deaths, 0))
-
-# Check the result
-head(distritos_joined)
-
-
-```
-
-```{r, warning=FALSE}
-library(dplyr)
-library(sf)
-library(tidyr)
-
-# Perform the left join
-distritos_joined <- distritos_joined %>%
-  left_join(death_counts, by = "ds_nome")
-
-# Check the first few rows to ensure the `n_deaths` column is now present
-head(distritos_joined)
-
-
-```
 
 ```{r, warning=FALSE}
 library(sf)
