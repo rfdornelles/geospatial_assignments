@@ -79,7 +79,7 @@ df_distritos_pop <- df_distritos |>
 
 
 ## plot the population by district 
-df_distritos_pop |>
+map_plot <- df_distritos_pop |>
   dplyr::mutate(pop_total = pop_total / 1000) |> # in thousands
   ggplot2::ggplot() +
   ggplot2::geom_sf(ggplot2::aes(fill = pop_total)) +
@@ -88,6 +88,12 @@ df_distritos_pop |>
   ggplot2::theme_minimal() 
   # ggplot2::theme(legend.position = "bottom")
 
+plotly::ggplotly(map_plot) |> 
+  plotly::layout(
+    title = "Population by district",
+    legend = list(orientation = "h", xanchor = "center", 
+                  x = 0.5, y = -0.2)
+  )
 
 ## save the new district data
 sf::write_sf(
