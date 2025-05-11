@@ -55,6 +55,10 @@ df_mortes_policia_clean <- df_mortes_policia_clean |>
   dplyr::distinct() |> 
   dplyr::arrange(data_fato)
 
+# set the geographic component
+df_mortes_policia_clean <- df_mortes_policia_clean |>
+  sf::st_as_sf(coords = c("longitude", "latitude"), crs = 4674) |>  
+  sf::st_transform(31983)      
 
 ## save
 readr::write_rds(
