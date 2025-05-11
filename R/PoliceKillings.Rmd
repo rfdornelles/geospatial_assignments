@@ -1,0 +1,544 @@
+---
+title: "Geospatial Analysis of Police Lethality in São Paulo"
+author: "Luis Ramirez, Monserrat López, Rodrigo Dornelles"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## 1. Load Libraries
+
+```{r libraries}
+
+packages <- c(
+  "here", "dplyr", "tidyr", "readr", "ggplot2", "sf", "lubridate",
+  "viridis", "ggthemes", "spdep", "spatialreg", "patchwork",
+  "janitor", "readxl", "stringr"
+)
+
+# Install any packages that aren't already installed
+suppressMessages({
+  installed <- rownames(installed.packages())
+  for (pkg in packages) {
+    if (!(pkg %in% installed)) {
+      install.packages(pkg, quiet = TRUE)
+    }
+  }
+
+  # Load all packages silently
+  invisible(lapply(packages, function(pkg) {
+    suppressPackageStartupMessages(library(pkg, character.only = TRUE))
+  }))
+})
+
+cat("packages ready.\n")
+
+```
+
+## 2. Load and Clean Police Deaths Data
+
+Load and clean raw Excel file containing police-related deaths. We retain only cases from São Paulo city, fix date formats, drop irrelevant columns, and remove rows with invalid or missing coordinates.
+
+```{r clean-data}
+# Load and clean
+
+df_name <- here("data-raw", "MortesDecorrentesIntervencaoPolicial_2025.xlsx")
+
+df_mortes_policia <- readxl::read_excel(df_name) |> 
+  janitor::clean_names() |> 
+  filter(municipio_circunscricao == "S.PAULO") |> 
+  mutate(
+    across(c(data_fato, data_nascimento_pessoa), ~ janitor::excel_numeric_to_date(as.numeric(.x)))
+  ) |> 
+  select(-id_delegacia, -departamento_circunscricao, -municipio_circunscricao,
+         -dp_circunscricao, -datahora_registro_bo, -municipio_elaboracao:-dep_elaboracao,
+         -data_nascimento_pessoa, -natureza_apurada) |> 
+  filter(!is.na(latitude) & !is.na(longitude), latitude != 0, longitude != 0) |> 
+  distinct() |> 
+  arrange(data_fato)
+
+# Save cleaned data
+write_rds(df_mortes_policia, here("data", "mortes_policia_clean.rds"))
+```
+
+## 3. Distribute Census 2022 Population by District
+
+We perform an area-weighted interpolation to distribute census sector population across districts, accounting for overlapping geometries.
+
+```{r census-distribution}
+# Load census sectors
+df_censo2022 <- read_sf(here("data-raw", "SIRGAS_SHP_setorcensitario2022", "SIRGAS_SHP_setorcensitario2022_polygon.shp")) |> 
+  st_set_crs(31983)
+
+# Load district boundaries
+df_distritos <- read_sf(here("data-raw", "shapefile_distrito", "SIRGAS_SHP_distrito.shp")) |> 
+  st_set_crs(31983)
+
+# Spatial intersection to handle sectors crossing multiple districts
+area_tbl <- df_censo2022 |> 
+  select(sc_setor) |> 
+  mutate(area_orig = st_area(geometry) |> as.numeric()) |> 
+  st_drop_geometry()
+
+sect_split <- st_intersection(
+  df_censo2022 |> select(sc_setor, sc_populac),
+  df_distritos |> select(ds_nome)
+) |> 
+  left_join(area_tbl, by = "sc_setor") |> 
+  mutate(
+    area_slice = st_area(geometry) |> as.numeric(),
+    prop_area = area_slice / area_orig
+  ) |> 
+  group_by(sc_setor) |> 
+  mutate(
+    prop_area = prop_area / sum(prop_area),
+    pop_share = sc_populac * prop_area
+  ) |> 
+  ungroup()
+
+# Aggregate population by district
+pop_distritos <- sect_split |> 
+  st_drop_geometry() |> 
+  group_by(ds_nome) |> 
+  summarise(pop_total = sum(pop_share), .groups = "drop")
+
+# Merge into districts and save
+df_distritos_pop <- df_distritos |> 
+  left_join(pop_distritos, by = "ds_nome") |> 
+  mutate(pop_total = replace_na(pop_total, 0))
+
+write_sf(df_distritos_pop, here("data", "distritos_pop_2022.geojson"))
+```
+
+## 4. Load and Prepare Data
+
+Load cleaned police death data and enrich with derived date and demographic attributes. Convert to spatial object in projected coordinate system (UTM 23S).
+
+```{r data-load}
+# Load police deaths
+df_clean <- read_rds(here("data", "mortes_policia_clean.rds")) |> 
+  mutate(
+    data_fato = as.Date(data_fato),
+    idade_pessoa = as.numeric(idade_pessoa),
+    longitude = as.numeric(longitude),
+    latitude = as.numeric(latitude),
+    ano = year(data_fato),
+    mes = month(data_fato, label = TRUE, abbr = TRUE)
+  )
+
+# Convert to sf object
+deaths_sf <- df_clean |> 
+  filter(!is.na(latitude), !is.na(longitude)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) |> 
+  st_transform(31983)
+
+```
+
+## 5. Exploratory Data Analysis
+
+Examine the age distribution of victims involved in police-related deaths.  
+
+```{r age-distribution}
+ggplot(df_clean, aes(x = idade_pessoa)) +
+  geom_histogram(binwidth = 5, fill = "steelblue", color = "white") +
+  labs(title = "Age Distribution of Police-Related Deaths", x = "Age", y = "Count") +
+  theme_minimal()
+```
+
+```{r monthly-distribution}
+df_clean |> 
+  count(ano, mes) |> 
+  ggplot(aes(x = mes, y = n)) +
+  geom_col(fill = "darkred") +
+  facet_wrap(~ano, ncol = 3) +
+  labs(title = "Monthly Police-Related Deaths", x = "Month", y = "Number of Deaths") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## 6. Spatial Join and Death Rates
+
+Spatially join each death to its corresponding district polygon. Then, aggregate the individual-level attributes to district level and compute normalized indicators such as deaths per km² and per capita.
+
+```{r join-districts}
+# Spatial join: assign each death to a district
+df_spatial_join <- st_join(deaths_sf, df_distritos_pop, join = st_within)
+
+# Aggregate individual-level data by district
+deaths_map <- df_distritos_pop |>
+  left_join(
+    df_spatial_join |>
+      st_drop_geometry() |>
+      group_by(ds_nome) |>
+      summarise(
+        n = n(),
+        avg_age = mean(idade_pessoa, na.rm = TRUE),
+        pct_masc = mean(sexo_pessoa == "Masculino", na.rm = TRUE),
+        pct_fem  = mean(sexo_pessoa == "Feminino", na.rm = TRUE),
+        pct_parda = mean(cor_pele == "Parda", na.rm = TRUE),
+        pct_branca = mean(cor_pele == "Branca", na.rm = TRUE),
+        pct_preta = mean(cor_pele == "Preta", na.rm = TRUE),
+        pct_autor = mean(tipo_pessoa == "Autor", na.rm = TRUE),
+        pct_vitima = mean(tipo_pessoa == "Vítima", na.rm = TRUE),
+        pct_servico = mean(situacao == "Serviço", na.rm = TRUE),
+        pct_folga = mean(situacao == "Folga", na.rm = TRUE),
+        pct_pm = mean(coorporacao == "PM", na.rm = TRUE)
+      ),
+    by = "ds_nome"
+  ) |>
+  mutate(
+    n = replace_na(n, 0),
+    deaths_per_area = n / ds_areakm,
+    deaths_per_hab = n / pop_total
+  )
+```
+
+## 7. Map visualizations
+
+Create choropleth maps for population, absolute deaths, and deaths per capita across districts. These maps help identify spatial patterns in police-related deaths.
+
+```{r death-rate-map}
+# Load deaths and transform to spatial
+df_deaths <- read_rds(here("data", "mortes_policia_clean.rds"))
+
+sf_deaths <- df_deaths |> 
+  filter(!is.na(longitude) & !is.na(latitude)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) |> 
+  st_transform(crs = 31983)
+
+# Spatial join with districts
+df_spatial_join <- st_join(sf_deaths, df_distritos_pop)
+
+# Count and normalize by population
+death_counts <- df_spatial_join |>
+  st_drop_geometry() |>
+  count(ds_nome, name = "n")
+
+death_rates <- df_distritos_pop |> 
+  left_join(death_counts, by = "ds_nome") |> 
+  mutate(
+    n = replace_na(n, 0),
+    deaths_per_100 = (n / pop_total) * 100
+  )
+
+# Map
+ggplot(death_rates) +
+  geom_sf(aes(fill = deaths_per_100), color = "white", lwd = 0.1) +
+  scale_fill_distiller(
+    name = "Deaths per 100 Inhabitants",
+    palette = "Reds",
+    direction = 1
+  ) +
+  labs(
+    title = "Police-Related Deaths per 100 Inhabitants",
+    subtitle = "São Paulo, by District",
+    caption = "Source: SSP, IBGE 2022"
+  ) +
+  theme_map() +
+  theme(
+    legend.position = "right",
+    legend.justification = 0.5,
+    legend.key.size = unit(1.1, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    legend.text = element_text(size = 11),
+    plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(size = 13, hjust = 0.5),
+    plot.caption = element_text(size = 10, hjust = 0.5)
+  )
+```
+
+```{r}
+
+death_counts <- df_spatial_join |> 
+  st_drop_geometry() |> 
+  count(ds_nome, name = "n")
+
+death_metrics <- df_distritos_pop |> 
+  left_join(death_counts, by = "ds_nome") |> 
+  mutate(
+    n = replace_na(n, 0),
+    pop_k = pop_total / 1000,
+    deaths_per_100 = (n / pop_total) * 100
+  )
+
+map_population <- ggplot(death_metrics) +
+  geom_sf(aes(fill = pop_k), color = "white", linewidth = 0.1) +
+  scale_fill_distiller(
+    name = "Population (thousands)", palette = "Blues", direction = 1
+  ) +
+  labs(title = "Population by District") +
+  theme_map()
+
+map_deaths <- ggplot(death_metrics) +
+  geom_sf(aes(fill = n), color = "white", linewidth = 0.1) +
+  scale_fill_distiller(
+    name = "Deaths", palette = "Purples", direction = 1
+  ) +
+  labs(title = "Police-Related Deaths") +
+  theme_map()
+
+map_rate <- ggplot(death_metrics) +
+  geom_sf(aes(fill = deaths_per_100), color = "white", linewidth = 0.1) +
+  scale_fill_distiller(
+    name = "Deaths per 100", palette = "Reds", direction = 1
+  ) +
+  labs(title = "Death Rate per 100 Inhabitants") +
+  theme_map()
+
+# Plot
+(map_population | map_deaths | map_rate) +
+  plot_annotation(
+    title = "Police Lethality and Demographics in São Paulo",
+    caption = "Source: SSP & IBGE 2022"
+  )
+
+```
+
+## 8. Local Spatial Autocorrelation (LISA)
+
+We runed LISA (Local Indicators of Spatial Association) to explore spatial patterns in the outcome variable (e.g., death rate per 100 inhabitants). Spatial autocorrelation analysis using Local Moran’s I (LISA) to detect spatial clusters of police-caused deaths across São Paulo districts. 
+
+We used the log-transformed death rate (deaths per 100 inhabitants) across districts. This transformation was necessary due to the original variable’s strong right skew, which could violate assumptions of normality and bias subsequent analyses, as shown in the following graph.
+
+```{r}
+# Examine distribution of the deaths per capita
+ggplot(deaths_map, aes(x = deaths_per_hab)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  labs(title = "Distribution of Deaths per Capita",
+       x = "Deaths per Inhabitants",
+       y = "Count") +
+  theme_minimal()
+
+# Explanation:
+# The distribution is right-skewed with a long tail, which can bias spatial statistics.
+# To reduce skewness and stabilize variance, we apply a log(x + 1) transformation.
+
+# Transform death rate
+deaths_map <- deaths_map |>
+  mutate(deaths_log = log1p(deaths_per_hab))  # log(x + 1) to handle zeros safely
+
+# Create spatial neighbors and weights
+nb <- poly2nb(deaths_map)
+lw <- nb2listw(nb, style = "W")
+
+# Compute Local Moran's I using transformed variable
+lisa <- localmoran(deaths_map$deaths_log, lw)
+
+# Join results and classify clusters
+lisa_results <- deaths_map |>
+  mutate(
+    local_I = lisa[, "Ii"],
+    local_p = lisa[, "Pr(z != E(Ii))"],
+    cluster_type = case_when(
+      local_I > 0 & deaths_log > mean(deaths_log, na.rm = TRUE) & local_p < 0.05 ~ "High-High",
+      local_I > 0 & deaths_log < mean(deaths_log, na.rm = TRUE) & local_p < 0.05 ~ "Low-Low",
+      local_I < 0 & deaths_log > mean(deaths_log, na.rm = TRUE) & local_p < 0.05 ~ "High-Low",
+      local_I < 0 & deaths_log < mean(deaths_log, na.rm = TRUE) & local_p < 0.05 ~ "Low-High",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+# Define palette
+lisa_palette <- c(
+  "High-High" = "darkred",
+  "Low-Low" = "darkblue",
+  "High-Low" = "orange",
+  "Low-High" = "skyblue",
+  "Not Significant" = "grey80"
+)
+
+# Plot LISA cluster map
+ggplot(lisa_results) +
+  geom_sf(aes(fill = cluster_type), color = "white", size = 0.2) +
+  scale_fill_manual(values = lisa_palette, name = "LISA Cluster") +
+  labs(
+    title = "Local Spatial Autocorrelation (LISA)",
+    subtitle = "Log-transformed Police-Related Death Rate per Capita",
+    caption = "Clusters based on Local Moran's I"
+  ) +
+  theme_map() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12)
+  )
+
+```
+We then computed the Global Moran's I statistic to assess spatial autocorrelation in the log-transformed rates. The result (Moran's I = 0.217, p < 0.001) revealed a statistically significant and positive spatial dependence, indicating that districts with higher (or lower) death rates are geographically clustered rather than randomly distributed. 
+
+```{r}
+# Global Moran's I on log-transformed death rate
+global_moran <- moran.test(deaths_map$deaths_log, lw)
+print(global_moran)
+
+# Moran scatterplot
+moran.plot(deaths_map$deaths_log, lw,
+           labels = deaths_map$ds_nome,
+           main = "Moran Plot of Log-Transformed Death Rate")
+
+```
+
+This Moran plot is a diagnostic tool used to visualize spatial autocorrelation in the log-transformed death rate across São Paulo’s districts. The Moran plot of the log-transformed death rate reveals significant spatial autocorrelation across São Paulo’s districts. The presence of points in the upper-right (High-High) and lower-left (Low-Low) quadrants indicates clusters where districts with high or low rates are surrounded by similar values, reflecting positive spatial autocorrelation. This is statistically confirmed by the significant Moran’s I statistic (I = 0.217, p < 0.001). Meanwhile, districts like SE and MORUMBI appear in the High-High quadrant, while areas like VILA MARIA and JACANÃ fall into High-Low or Low-High outlier categories, suggesting potential spatial anomalies. Overall, the pattern suggests that police-related deaths are not randomly distributed but tend to cluster geographically, warranting targeted spatial analysis and policy attention. The presence of several districts in the High-High and Low-Low quadrants, and the significant positive Moran's I (0.217, p < 0.001), confirm spatial clustering of police-related deaths.
+
+## 9. Spatial Modelling
+
+We begin with a standard Ordinary Least Squares (OLS) regression model to explore whether demographic and policing-related district-level variables—such as racial composition, gender, age, and affiliation with the military police—help explain the log-transformed rate of police-related deaths. OLS serves as a baseline for comparison.
+
+As discussed before, to address the skewness in the distribution of deaths per capita, we apply a log(x + 1) transformation. This helps stabilize variance, reduce the influence of extreme values, and make the outcome variable more normally distributed—an important assumption for both OLS and spatial regression models.
+
+```{r spatial-modelling, warning=FALSE}
+# Required libraries
+library(spatialreg)
+library(spdep)
+library(tidyr)
+library(broom)
+library(ggplot2)
+
+# 1. Prepare data for modeling
+model_data <- deaths_map |> 
+  drop_na(deaths_per_hab, pct_parda, pct_branca, pct_preta, pct_masc, avg_age, pct_pm)
+
+model_data <- model_data |> mutate(deaths_log = log1p(deaths_per_hab))
+
+# 2. Create spatial weights
+nb <- poly2nb(model_data)
+lw <- nb2listw(nb, style = "W")
+
+# 3. OLS regression model with enriched covariates
+ols_model <- lm(
+  deaths_log ~ pct_branca + pct_preta + pct_masc + avg_age + pct_pm,
+  data = model_data
+)
+summary(ols_model)
+
+# 4. Test for spatial autocorrelation in residuals
+moran.test(residuals(ols_model), lw)
+
+# 5. Spatial Lag Model
+lag_model <- lagsarlm(
+  deaths_log ~ pct_branca + pct_preta + pct_masc + avg_age + pct_pm,
+  data = model_data,
+  listw = lw,
+  method = "eigen"
+)
+summary(lag_model)
+
+# 6. Spatial Error Model
+error_model <- errorsarlm(
+  deaths_log ~ pct_branca + pct_preta + pct_masc + avg_age + pct_pm,
+  data = model_data,
+  listw = lw,
+  method = "eigen"
+)
+summary(error_model)
+
+# 7. Impacts analysis (for spatial lag model)
+impacts_lag <- impacts(lag_model, listw = lw, R = 100)
+summary(impacts_lag, zstats = TRUE)$pzmat
+
+# 8. Lagrange Multiplier Tests to compare models
+lm.LMtests(ols_model, lw, test = c("LMerr", "LMlag", "RLMerr", "RLMlag"))
+
+# 9. AIC comparison
+AIC(ols_model, lag_model, error_model)
+
+```
+The OLS model shows very low explanatory power (adjusted R² < 0), and none of the predictors are statistically significant. This suggests that key spatial dynamics may be missing from the model specification.
+
+### Spatial lag model
+
+The spatial lag model accounts for spatial dependence by including a spatially lagged dependent variable (i.e., neighboring values of log death rate) as a predictor. This model is appropriate when we believe that death rates in one district may influence (or be influenced by) those in neighboring districts.
+
+```{r}
+lag_model <- lagsarlm(
+  deaths_log ~ pct_branca + pct_preta + pct_masc + avg_age + pct_pm,
+  data = model_data,
+  listw = lw,
+  method = "eigen"
+)
+summary(lag_model)
+```
+The spatial lag model improves model fit (lower AIC) and yields a significant spatial autoregressive coefficient (Rho), indicating strong spatial spillover effects. However, individual-level covariates still lack statistical significance, suggesting that structural or contextual factors may play a stronger role.
+
+To formally assess the best model, we conduct Lagrange Multiplier tests and compare AIC values. We also examine the residuals of the best-performing model to ensure spatial autocorrelation has been addressed.
+
+The spatial lag model emerges as the preferred specification based on AIC, Moran's I, and robust LM tests. This model captures spatial dependence without overfitting and removes residual autocorrelation, improving inference robustness. However, weak predictor significance highlights the need for additional structural or socio-economic variables.
+
+```{r}
+AIC(ols_model, lag_model)
+moran.test(lag_model$residuals, lw)
+
+```
+
+```{r}
+library(ggplot2)
+
+# 1. Get predictions and residuals
+model_data <- model_data |>
+  mutate(
+    predicted = predict(lag_model),
+    residuals = deaths_log - predicted
+  )
+
+# 2. Predicted vs. actual
+p1 <- ggplot(model_data, aes(x = deaths_log, y = predicted)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(
+    title = "Predicted vs Actual (Log Deaths per Capita)",
+    x = "Observed (log deaths/hab)",
+    y = "Predicted"
+  ) +
+  theme_minimal()
+
+# 3. Residuals plot
+p2 <- ggplot(model_data, aes(x = predicted, y = residuals)) +
+  geom_point(alpha = 0.6, color = "darkorange") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Residuals vs Predicted",
+    x = "Predicted (log deaths/hab)",
+    y = "Residual"
+  ) +
+  theme_minimal()
+
+# 4. Plot side-by-side
+library(patchwork)
+p1 + p2
+
+```
+
+## 9. Add other Socio-economic covariates (proxy for wealth, inequality, marginalization)
+
+Possible variables per district:
+
+-   Income per capita. Proxy for wealth or deprivation
+
+-   Unemployment rate. Associated with marginalization and possibly over-policing
+
+-   Gini index / inequality metric To test if inequality drives violence or policing
+
+-   \% receiving Bolsa Família or similar social benefit Poverty proxy
+
+-   \% households without formal land titles Informality and vulnerability
+
+-   Urbanization Variables:
+
+-   Urbanization and spatial form
+
+-   \% informal housing / favelas (if available)\
+
+-   Access to public services (e.g., water, sanitation)\
+
+-   Distance to police stations or subprefeitura HQs\
+
+-   Spatial proximity to policing institutions
+
+-   Crime rate by district. Can help isolate police violence from general crime
+
+-   \% of BOs filed per 1,000 people Proxy for reporting or police presence
+
+-   Police station presence / size / budget Variation in policing intensity
