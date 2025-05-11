@@ -185,7 +185,7 @@ deaths_map <- df_distritos_pop |>
         pct_vitima = mean(tipo_pessoa == "Vítima", na.rm = TRUE),
         pct_servico = mean(situacao == "Serviço", na.rm = TRUE),
         pct_folga = mean(situacao == "Folga", na.rm = TRUE),
-        pct_pm = mean(coorporacao == "PM", na.rm = TRUE)
+        pct_pm = mean(coorporacao == "PM", na.rm = TRUE) #Percentage of military police 
       ),
     by = "ds_nome"
   ) |>
@@ -401,7 +401,7 @@ library(ggplot2)
 model_data <- deaths_map |> 
   drop_na(deaths_per_hab, pct_parda, pct_branca, pct_preta, pct_masc, avg_age, pct_pm)
 
-model_data <- model_data |> mutate(deaths_log = log1p(deaths_per_hab))
+model_data <- model_data |> mutate(deaths_log = log1p(deaths_per_hab)) #maintain the transformation in the dependent variable
 
 # 2. Create spatial weights
 nb <- poly2nb(model_data)
@@ -415,7 +415,7 @@ ols_model <- lm(
 summary(ols_model)
 
 # 4. Test for spatial autocorrelation in residuals
-moran.test(residuals(ols_model), lw)
+moran_result <- moran.test(residuals(ols_model), lw)
 
 # 5. Spatial Lag Model
 lag_model <- lagsarlm(
@@ -470,6 +470,37 @@ The spatial lag model emerges as the preferred specification based on AIC, Moran
 ```{r}
 AIC(ols_model, lag_model)
 moran.test(lag_model$residuals, lw)
+
+# 1. Perform Moran's I test for residuals of the models
+moran_test_ols <- moran.test(residuals(ols_model), lw)  # OLS model residuals
+moran_test_lag <- moran.test(residuals(lag_model), lw)  # Spatial Lag model residuals
+moran_test_error <- moran.test(residuals(error_model), lw)  # Spatial Error model residuals
+
+# 2. Create the table for diagnostics
+diagnostics_table <- tibble::tibble(
+  Diagnostic = c("Moran's I on OLS residuals", "Moran's I on Spatial Lag Residuals", "Moran's I on Spatial Error Residuals"),
+  Statistic = c(
+    moran_test_ols$estimate[1],  # Moran's I statistic for OLS residuals
+    moran_test_lag$estimate[1],  # Moran's I statistic for Spatial Lag residuals
+    moran_test_error$estimate[1] # Moran's I statistic for Spatial Error residuals
+  ),
+  P_Value = c(
+    moran_test_ols$p.value,  # P-value for OLS Moran's I test
+    moran_test_lag$p.value,  # P-value for Spatial Lag Moran's I test
+    moran_test_error$p.value  # P-value for Spatial Error Moran's I test
+  ),
+  Rho_Lambda = c(
+    NA,  # OLS does not have rho or lambda, so it gets NA
+    lag_model$rho,  # Rho for Spatial Lag Model
+    error_model$lambda  # Lambda for Spatial Error Model
+  )
+)
+
+# Print the diagnostics table
+print(diagnostics_table)
+
+
+
 
 ```
 
