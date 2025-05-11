@@ -741,8 +741,28 @@ sem_fit <- errorsarlm(
 summary(sem_fit)
 
 ```
+### Dataset with buffer zones in favelas 
 
 ```{r, warning=FALSE}
+library(sf)
+library(dplyr)
+
+# Step 1: Convert police deaths into spatial points
+deaths_sf <- df_clean %>%
+  filter(!is.na(longitude), !is.na(latitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = 31983)  # Use projected CRS for distance-based ops
+
+# Step 2: Buffer favelas by 100 meters
+favelas_buffer <- favelas %>%
+  st_transform(crs = 31983) %>%
+  st_buffer(dist = 100)
+
+# Step 3: Join deaths within buffer zone
+deaths_near_favela <- st_join(deaths_sf, favelas_buffer, join = st_within)
+
+# Step 4: Flag deaths within 100m of a favela
+df_clean$near_favela_100m <- df_clean$num_bo %in% deaths_near_favela$num_bo
 
 
 ```

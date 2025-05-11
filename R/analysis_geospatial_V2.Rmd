@@ -254,10 +254,109 @@ lm.LMtests(ols_model, lw, test = "all")  # Test for spatial dependence
 
 ```
 
+```{r, warning=FALSE}
 
+
+```
 
 
 ```{r, warning=FALSE}
+
+library(sf)
+library(dplyr)
+library(tidyr)
+library(spdep)
+
+# 1. Convert police deaths to sf and transform CRS
+deaths_sf <- df_clean %>%
+  filter(!is.na(longitude), !is.na(latitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = 31983)
+
+# 2. Buffer favelas
+favelas_buffer <- favelas %>%
+  st_transform(crs = 31983) %>%
+  st_buffer(dist = 100)
+
+# 3. Flag deaths near favelas (100m)
+deaths_near_favela <- st_join(deaths_sf, favelas_buffer, join = st_within)
+
+df_clean$near_favela_100m <- df_clean$num_bo %in% deaths_near_favela$num_bo
+
+# 4. Read and prep district data
+data_norm <- st_read("../data/distritos_pop_2022.geojson") %>%
+  st_set_crs(31983) %>%
+  mutate(ds_nome = toupper(ds_nome))
+
+# 5. Count all deaths by district
+deaths_by_district <- st_join(deaths_sf, data_norm, join = st_within) %>%
+  st_drop_geometry() %>%
+  mutate(ds_nome = toupper(ds_nome)) %>%
+  count(ds_nome, name = "n_deaths")
+
+# 6. Count deaths near favelas by district
+deaths_favela <- df_clean %>%
+  filter(near_favela_100m == TRUE, !is.na(longitude), !is.na(latitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = 31983) %>%
+  st_join(data_norm, join = st_within) %>%
+  st_drop_geometry() %>%
+  mutate(ds_nome = toupper(ds_nome)) %>%
+  count(ds_nome, name = "n_deaths_favela")
+
+# 7. Merge everything into the district dataset
+distritos_joined <- data_norm %>%
+  left_join(deaths_by_district, by = "ds_nome") %>%
+  left_join(deaths_favela, by = "ds_nome") %>%
+  mutate(
+    n_deaths          = replace_na(n_deaths, 0),
+    n_deaths_favela   = replace_na(n_deaths_favela, 0),
+    death_rate        = n_deaths / pop_total,
+    favela_death_rate = n_deaths_favela / pop_total
+  )
+
+# 8. Moran’s I on total deaths
+nb <- poly2nb(distritos_joined)
+lw <- nb2listw(nb, style = "W")
+lisa <- localmoran(distritos_joined$death_rate, lw)
+
+distritos_joined <- distritos_joined %>%
+  mutate(
+    local_I = lisa[, "Ii"],
+    local_p = lisa[, "Pr(z != E(Ii))"]
+  )
+
+# 9. Classify clusters
+mean_rate <- mean(distritos_joined$death_rate, na.rm = TRUE)
+distritos_joined <- distritos_joined %>%
+  mutate(
+    cluster_type = case_when(
+      local_I > 0 & death_rate > mean_rate & local_p < 0.05 ~ "High-High",
+      local_I > 0 & death_rate < mean_rate & local_p < 0.05 ~ "Low-Low",
+      local_I < 0 & death_rate > mean_rate & local_p < 0.05 ~ "High-Low",
+      local_I < 0 & death_rate < mean_rate & local_p < 0.05 ~ "Low-High",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+# 10. Plot LISA
+library(ggplot2)
+
+ggplot(distritos_joined) +
+  geom_sf(aes(fill = cluster_type), color = "white", size = 0.2) +
+  scale_fill_manual(values = c(
+    "High-High" = "darkred",
+    "Low-Low" = "darkblue",
+    "High-Low" = "orange",
+    "Low-High" = "skyblue",
+    "Not Significant" = "lightgrey"
+  )) +
+  labs(
+    title = "LISA Cluster Map of Police Death Rates",
+    subtitle = "São Paulo Districts",
+    caption = "Cluster types: High-High, Low-Low, High-Low, Low-High"
+  ) +
+  theme_minimal()
 
 
 
@@ -268,6 +367,92 @@ lm.LMtests(ols_model, lw, test = "all")  # Test for spatial dependence
 
 ```{r, warning=FALSE}
 
+library(sf)
+library(dplyr)
+library(tidyr)
+library(spdep)
+library(ggplot2)
+
+# 1. Load and prep data
+data_norm <- st_read("../data/distritos_pop_2022.geojson") %>%
+  st_set_crs(31983) %>%
+  mutate(ds_nome = toupper(ds_nome))
+
+# 2. Convert deaths to sf and reproject
+deaths_sf <- df_clean %>%
+  filter(!is.na(longitude), !is.na(latitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = 31983)
+
+# 3. Create 100m buffer around favelas
+favelas_buffer <- favelas %>%
+  st_transform(crs = 31983) %>%
+  st_buffer(dist = 100)
+
+# 4. Identify deaths within 100m of favela
+deaths_near_favela <- st_join(deaths_sf, favelas_buffer, join = st_within)
+
+# 5. Add flag to original df
+df_clean$near_favela_100m <- df_clean$num_bo %in% deaths_near_favela$num_bo
+
+# 6. Count deaths near favelas by district
+deaths_favela <- df_clean %>%
+  filter(near_favela_100m == TRUE, !is.na(longitude), !is.na(latitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = 31983) %>%
+  st_join(data_norm, join = st_within) %>%
+  st_drop_geometry() %>%
+  mutate(ds_nome = toupper(ds_nome)) %>%
+  count(ds_nome, name = "n_deaths_favela")
+
+# 7. Join with data_norm and calculate favela death rate
+distritos_joined <- data_norm %>%
+  left_join(deaths_favela, by = "ds_nome") %>%
+  mutate(
+    n_deaths_favela   = replace_na(n_deaths_favela, 0),
+    favela_death_rate = n_deaths_favela / pop_total
+  )
+
+# 8. Compute Moran’s I for favela-related deaths
+nb  <- poly2nb(distritos_joined)
+lw  <- nb2listw(nb, style = "W")
+
+lisa_favela <- localmoran(distritos_joined$favela_death_rate, lw)
+
+# 9. Add cluster classification
+mean_rate_favela <- mean(distritos_joined$favela_death_rate, na.rm = TRUE)
+
+distritos_joined <- distritos_joined %>%
+  mutate(
+    favela_local_I = lisa_favela[, "Ii"],
+    favela_local_p = lisa_favela[, "Pr(z != E(Ii))"],
+    favela_cluster_type = case_when(
+      favela_local_I > 0 & favela_death_rate > mean_rate_favela & favela_local_p < 0.05 ~ "High-High",
+      favela_local_I > 0 & favela_death_rate < mean_rate_favela & favela_local_p < 0.05 ~ "Low-Low",
+      favela_local_I < 0 & favela_death_rate > mean_rate_favela & favela_local_p < 0.05 ~ "High-Low",
+      favela_local_I < 0 & favela_death_rate < mean_rate_favela & favela_local_p < 0.05 ~ "Low-High",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+# 10. Plot the LISA cluster map
+cluster_palette <- c(
+  "High-High"      = "darkred",
+  "Low-Low"        = "darkblue",
+  "High-Low"       = "orange",
+  "Low-High"       = "skyblue",
+  "Not Significant"= "lightgrey"
+)
+
+ggplot(distritos_joined) +
+  geom_sf(aes(fill = favela_cluster_type), color = "white", size = 0.2) +
+  scale_fill_manual(values = cluster_palette, name = "LISA Cluster") +
+  labs(
+    title    = "LISA Cluster Map: Police Deaths Near Favelas",
+    subtitle = "São Paulo Districts (within 100m of a Favela)",
+    caption  = "Cluster types: High-High, Low-Low, High-Low, Low-High"
+  ) +
+  theme_minimal()
 
 
 ```
