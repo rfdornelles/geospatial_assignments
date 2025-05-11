@@ -152,7 +152,7 @@ ggplot(df_clean, aes(x = idade_pessoa)) +
 df_clean |> 
   count(ano, mes) |> 
   ggplot(aes(x = mes, y = n)) +
-  geom_col(fill = "darkblue") +
+  geom_col(fill = "darkred") +
   facet_wrap(~ano, ncol = 3) +
   labs(title = "Monthly Police-Related Deaths", x = "Month", y = "Number of Deaths") +
   theme_minimal() +
@@ -267,7 +267,7 @@ death_metrics <- df_distritos_pop |>
 map_population <- ggplot(death_metrics) +
   geom_sf(aes(fill = pop_k), color = "white", linewidth = 0.1) +
   scale_fill_distiller(
-    name = "Population \n(thousands)", palette = "Blues", direction = 1
+    name = "Population (thousands)", palette = "Blues", direction = 1
   ) +
   labs(title = "Population by District") +
   theme_map()
@@ -283,7 +283,7 @@ map_deaths <- ggplot(death_metrics) +
 map_rate <- ggplot(death_metrics) +
   geom_sf(aes(fill = deaths_per_100), color = "white", linewidth = 0.1) +
   scale_fill_distiller(
-    name = "Deaths \nper 100", palette = "Reds", direction = 1
+    name = "Deaths per 100", palette = "Reds", direction = 1
   ) +
   labs(title = "Death Rate per 100 Inhabitants") +
   theme_map()
