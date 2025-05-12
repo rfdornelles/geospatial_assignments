@@ -77,7 +77,7 @@ df_distritos <- read_sf(here("data-raw", "shapefile_distrito", "SIRGAS_SHP_distr
   st_set_crs(31983)
 
 ## read income data
-tbl_income <- readr::read_csv("data-raw/bq_data_income_setor_censitario.csv") |> 
+tbl_income <- readr::read_csv(here("data-raw", "bq_data_income_setor_censitario.csv") |> 
   dplyr::mutate(
     sc_setor = as.character(id_setor_censitario)
   ) |> 
