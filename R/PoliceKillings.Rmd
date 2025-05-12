@@ -390,6 +390,13 @@ We begin with a standard Ordinary Least Squares (OLS) regression model to explor
 As discussed before, to address the skewness in the distribution of deaths per capita, we apply a log(x + 1) transformation. This helps stabilize variance, reduce the influence of extreme values, and make the outcome variable more normally distributed—an important assumption for both OLS and spatial regression models.
 
 ```{r spatial-modelling, warning=FALSE}
+# Required libraries
+library(spatialreg)
+library(spdep)
+library(tidyr)
+library(broom)
+library(ggplot2)
+
 # 1. Prepare data for modeling
 model_data <- deaths_map |> 
   drop_na(deaths_per_hab, pct_parda, pct_branca, pct_preta, pct_masc, avg_age, pct_pm)
@@ -429,13 +436,6 @@ model_data <- model_data |>
 ```
 
 ```{r spatial-modelling, warning=FALSE}
-# Required libraries
-library(spatialreg)
-library(spdep)
-library(tidyr)
-library(broom)
-library(ggplot2)
-
 
 # 2. Create spatial weights
 nb <- poly2nb(model_data)
