@@ -390,6 +390,45 @@ We begin with a standard Ordinary Least Squares (OLS) regression model to explor
 As discussed before, to address the skewness in the distribution of deaths per capita, we apply a log(x + 1) transformation. This helps stabilize variance, reduce the influence of extreme values, and make the outcome variable more normally distributed—an important assumption for both OLS and spatial regression models.
 
 ```{r spatial-modelling, warning=FALSE}
+# 1. Prepare data for modeling
+model_data <- deaths_map |> 
+  drop_na(deaths_per_hab, pct_parda, pct_branca, pct_preta, pct_masc, avg_age, pct_pm)
+
+model_data <- model_data |> mutate(deaths_log = log1p(deaths_per_hab)) #maintain the transformation in the dependent variable
+
+data_favela <- st_read("../data-raw/SIRGAS_SHP_favela/SIRGAS_SHP_favela.shp")
+head(data_favela)
+head(model_data)
+
+st_crs(data_favela) <- st_crs(model_data)
+
+# 2. Calculate area of each district
+model_data <- model_data |> 
+  mutate(area_total = st_area(geometry))
+
+# 3. Intersect favelas with districts
+favela_intersection <- st_intersection(data_favela, model_data)
+
+# 4. Compute favela area within each district using `ds_nome`
+favela_area_district <- favela_intersection |> 
+  mutate(favela_area = st_area(geometry)) |> 
+  group_by(ds_nome) |> 
+  summarise(total_favela_area = sum(favela_area)) |> 
+  ungroup()
+
+# Convert to data.frame to avoid sf conflict
+favela_area_district_df <- favela_area_district |> st_drop_geometry()
+
+# Now perform the join and compute the percentage
+model_data <- model_data |> 
+  left_join(favela_area_district_df, by = "ds_nome") |> 
+  mutate(
+    total_favela_area = replace_na(total_favela_area, units::set_units(0, m^2)),
+    pct_favela = as.numeric(total_favela_area / area_total) * 100
+  )
+```
+
+```{r spatial-modelling, warning=FALSE}
 # Required libraries
 library(spatialreg)
 library(spdep)
@@ -397,11 +436,6 @@ library(tidyr)
 library(broom)
 library(ggplot2)
 
-# 1. Prepare data for modeling
-model_data <- deaths_map |> 
-  drop_na(deaths_per_hab, pct_parda, pct_branca, pct_preta, pct_masc, avg_age, pct_pm)
-
-model_data <- model_data |> mutate(deaths_log = log1p(deaths_per_hab)) #maintain the transformation in the dependent variable
 
 # 2. Create spatial weights
 nb <- poly2nb(model_data)
@@ -409,7 +443,7 @@ lw <- nb2listw(nb, style = "W")
 
 # 3. OLS regression model with enriched covariates
 ols_model <- lm(
-  deaths_log ~ pct_branca + pct_preta + pct_masc + avg_age + pct_pm,
+  deaths_log ~ pct_favela + pct_branca + pct_preta + pct_masc + avg_age + pct_pm,
   data = model_data
 )
 summary(ols_model)
@@ -419,7 +453,7 @@ moran_result <- moran.test(residuals(ols_model), lw)
 
 # 5. Spatial Lag Model
 lag_model <- lagsarlm(
-  deaths_log ~ pct_branca + pct_preta + pct_masc + avg_age + pct_pm,
+  deaths_log ~ pct_favela + pct_branca + pct_preta + pct_masc + avg_age + pct_pm,
   data = model_data,
   listw = lw,
   method = "eigen"
@@ -428,7 +462,7 @@ summary(lag_model)
 
 # 6. Spatial Error Model
 error_model <- errorsarlm(
-  deaths_log ~ pct_branca + pct_preta + pct_masc + avg_age + pct_pm,
+  deaths_log ~ pct_favela + pct_branca + pct_preta + pct_masc + avg_age + pct_pm,
   data = model_data,
   listw = lw,
   method = "eigen"
