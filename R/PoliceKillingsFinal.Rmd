@@ -140,6 +140,11 @@ deaths_map <- df_distritos_pop |>
 ## 6. Maps
 
 ```{r}
+model_data <- deaths_map |> 
+  drop_na(deaths_per_hab, pct_parda, pct_branca, pct_preta, pct_masc, avg_age, pct_pm)
+
+model_data <- model_data |> mutate(deaths_log = log1p(deaths_per_hab)) #maintain the transformation in the dependent variable
+
 # Death rate per 100 inhabitants  
 model_data <- model_data |>
   mutate(
@@ -215,7 +220,9 @@ deaths_map <- deaths_map |>
     )
   )
 
-lisa
+
+head(lisa)
+
 ```
 
 
