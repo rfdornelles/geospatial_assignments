@@ -76,7 +76,14 @@ df_censo2022 <- read_sf(here("data-raw", "SIRGAS_SHP_setorcensitario2022", "SIRG
 df_distritos <- read_sf(here("data-raw", "shapefile_distrito", "SIRGAS_SHP_distrito.shp")) |> 
   st_set_crs(31983)
 
-# income
+## read income data
+tbl_income <- readr::read_csv("data-raw/bq_data_income_setor_censitario.csv") |> 
+  dplyr::mutate(
+    sc_setor = as.character(id_setor_censitario)
+  ) |> 
+  dplyr::filter(!is.na(v002)) |> 
+  dplyr::select(sc_setor, month_house_income = v002)
+
 df_censo2022 <- df_censo2022 |> 
   dplyr::left_join(tbl_income)
 
