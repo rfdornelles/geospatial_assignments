@@ -1,0 +1,380 @@
+---
+title: "Geospatial Analysis of Police Lethality in São Paulo"
+author: "Luis Ramirez, Monserrat López, Rodrigo Dornelles"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## 1. Load Libraries
+
+```{r libraries}
+packages <- c(
+  "here", "dplyr", "tidyr", "readr", "ggplot2", "sf", "lubridate",
+  "viridis", "ggthemes", "spdep", "spatialreg", "patchwork",
+  "janitor", "readxl", "stringr", "broom", "grid"  
+)
+
+suppressMessages({
+  installed <- rownames(installed.packages())
+  for (pkg in packages) {
+    if (!(pkg %in% installed)) install.packages(pkg, quiet = TRUE)
+  }
+  invisible(lapply(packages, function(pkg) library(pkg, character.only = TRUE)))
+})
+cat("packages ready.\n")
+```
+
+## 2. Load and Clean Police Deaths Data
+
+```{r clean-data}
+df_mortes_policia <- read_excel(here("data-raw", "MortesDecorrentesIntervencaoPolicial_2025.xlsx")) |> 
+  clean_names() |> 
+  filter(municipio_circunscricao == "S.PAULO") |> 
+  mutate(across(c(data_fato, data_nascimento_pessoa), ~ excel_numeric_to_date(as.numeric(.x)))) |> 
+  select(-id_delegacia, -departamento_circunscricao, -municipio_circunscricao,
+         -dp_circunscricao, -datahora_registro_bo, -municipio_elaboracao:-dep_elaboracao,
+         -data_nascimento_pessoa, -natureza_apurada) |> 
+  filter(!is.na(latitude) & !is.na(longitude), latitude != 0, longitude != 0) |> 
+  distinct() |> arrange(data_fato)
+
+write_rds(df_mortes_policia, here("data", "mortes_policia_clean.rds"))
+```
+
+## 3. Distribute Census 2022 Population by District and Income
+
+```{r census-distribution}
+df_censo2022 <- read_sf(here("data-raw", "SIRGAS_SHP_setorcensitario2022", "SIRGAS_SHP_setorcensitario2022_polygon.shp")) |> 
+  st_set_crs(31983)
+
+df_distritos <- read_sf(here("data-raw", "shapefile_distrito", "SIRGAS_SHP_distrito.shp")) |> 
+  st_set_crs(31983)
+
+tbl_income <- read_csv(here("data-raw", "bq_data_income_setor_censitario.csv")) |> 
+  mutate(sc_setor = as.character(id_setor_censitario)) |> 
+  filter(!is.na(v002)) |> 
+  select(sc_setor, month_house_income = v002)
+
+df_censo2022 <- df_censo2022 |> left_join(tbl_income)
+
+area_tbl <- df_censo2022 |> 
+  select(sc_setor) |> 
+  mutate(area_orig = st_area(geometry) |> as.numeric()) |> 
+  st_drop_geometry()
+
+sect_split <- st_intersection(
+  df_censo2022 |> select(sc_setor, sc_populac, month_house_income),
+  df_distritos |> select(ds_nome)
+) |> 
+  left_join(area_tbl, by = "sc_setor") |> 
+  mutate(
+    area_slice = st_area(geometry) |> as.numeric(),
+    prop_area = area_slice / area_orig
+  ) |> 
+  group_by(sc_setor) |> 
+  mutate(
+    prop_area = prop_area / sum(prop_area),
+    pop_share = sc_populac * prop_area
+  ) |> 
+  ungroup()
+
+pop_distritos <- sect_split |> 
+  st_drop_geometry() |> 
+  group_by(ds_nome) |> 
+  summarise(
+    pop_total = sum(pop_share, na.rm = TRUE),
+    month_house_income = sum(month_house_income, na.rm = TRUE),
+    income_per_capita = month_house_income / pop_total,
+    .groups = "drop"
+  )
+
+df_distritos_pop <- df_distritos |> 
+  left_join(pop_distritos, by = "ds_nome") |> 
+  mutate(pop_total = replace_na(pop_total, 0))
+
+write_rds(df_distritos_pop, here("data", "distritos_pop_2022.rds"))
+```
+
+## 4. Join with Districts and Compute Rates
+
+```{r join-districts}
+df_clean <- read_rds(here("data", "mortes_policia_clean.rds")) |> 
+  mutate(data_fato = as.Date(data_fato),
+         idade_pessoa = as.numeric(idade_pessoa),
+         longitude = as.numeric(longitude),
+         latitude = as.numeric(latitude),
+         ano = year(data_fato),
+         mes = month(data_fato, label = TRUE, abbr = TRUE))
+
+deaths_sf <- df_clean |> filter(!is.na(latitude), !is.na(longitude)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) |> st_transform(31983)
+
+# Join
+df_spatial_join <- st_join(deaths_sf, df_distritos_pop, join = st_within)
+
+deaths_map <- df_distritos_pop |> 
+  left_join(
+    df_spatial_join |> st_drop_geometry() |> 
+      group_by(ds_nome) |> 
+      summarise(
+        n = n(),
+        avg_age = mean(idade_pessoa, na.rm = TRUE),
+        pct_masc = mean(sexo_pessoa == "Masculino", na.rm = TRUE),
+        pct_parda = mean(cor_pele == "Parda", na.rm = TRUE),
+        pct_branca = mean(cor_pele == "Branca", na.rm = TRUE),
+        pct_preta = mean(cor_pele == "Preta", na.rm = TRUE),
+        pct_pm = mean(coorporacao == "PM", na.rm = TRUE)
+      ),
+    by = "ds_nome"
+  ) |> 
+  mutate(
+    n = replace_na(n, 0),
+    deaths_per_hab = n / pop_total,
+    deaths_log = log1p(deaths_per_hab)
+  )
+```
+
+## 6. Maps
+
+```{r}
+
+model_data <- deaths_map |> 
+  drop_na(deaths_per_hab, pct_parda, pct_branca, pct_preta, pct_masc, avg_age, pct_pm)
+
+model_data <- model_data |> mutate(deaths_log = log1p(deaths_per_hab)) #maintain the transformation in the dependent variable
+
+# Death rate per 100 inhabitants  
+model_data <- model_data |>
+  mutate(
+    pop_k = pop_total / 1000,
+    deaths_per_100 = deaths_per_hab * 1000
+  )
+
+library(grid)  # for unit()
+
+# Population map
+map_population <- ggplot(model_data) +
+  geom_sf(aes(fill = pop_k), color = "white", linewidth = 0.2) +
+  scale_fill_distiller(name = "Population", palette = "Blues", direction = 1) +
+  labs(title = "Population by District (thousands)") +
+  theme_map() + 
+  theme(
+    legend.position = "right",
+    legend.key.width = unit(0.2, "cm")
+  )
+
+# Raw deaths map
+map_deaths <- ggplot(model_data) +
+  geom_sf(aes(fill = n), color = "white", linewidth = 0.2) +
+  scale_fill_distiller(name = "Police Deaths", palette = "Purples", direction = 1) +
+  labs(title = "Police-Related Deaths (totals)") +
+  theme_map() + 
+  theme(
+    legend.position = "right",
+    legend.key.width = unit(0.2, "cm")
+  )
+
+# Death rate map
+map_rate <- ggplot(model_data) +
+  geom_sf(aes(fill = deaths_per_100), color = "white", linewidth = 0.2) +
+  scale_fill_distiller(name = "Police Death Rate", palette = "Reds", direction = 1) +
+  labs(title = "Police-Related Deaths",
+      subtitle = "(per 1,000 Inhabitants)") +
+  theme_map() + 
+  theme(
+    legend.position = "right",
+    legend.key.width = unit(0.2, "cm")
+  )
+
+# Combine plots
+(map_population | map_deaths | map_rate) +
+  plot_annotation(
+    title = "Police Lethality and Demographics in São Paulo",
+    caption = "Source: SSP & IBGE 2022"
+  )
+
+
+```
+
+## 5. Test for Spatial Autocorrelation
+
+```{r lisa-and-global-moran}
+nb <- poly2nb(deaths_map)
+lw <- nb2listw(nb, style = "W")
+
+moran.test(deaths_map$deaths_log, lw)
+
+lisa <- localmoran(deaths_map$deaths_log, lw)
+deaths_map <- deaths_map |> 
+  mutate(
+    local_I = lisa[,1],
+    local_p = lisa[,5],
+    cluster_type = case_when(
+      local_I > 0 & deaths_log > mean(deaths_log, na.rm=TRUE) & local_p < 0.05 ~ "High-High",
+      local_I > 0 & deaths_log < mean(deaths_log, na.rm=TRUE) & local_p < 0.05 ~ "Low-Low",
+      local_I < 0 & deaths_log > mean(deaths_log, na.rm=TRUE) & local_p < 0.05 ~ "High-Low",
+      local_I < 0 & deaths_log < mean(deaths_log, na.rm=TRUE) & local_p < 0.05 ~ "Low-High",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+head(lisa)
+```
+
+
+```{r}
+
+# Create helper theme to apply across all maps
+common_theme <- theme_map() +
+  theme(
+    plot.title = element_text(size = 14, hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(size = 11, hjust = 0.5),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8),
+    legend.key.width = unit(0.2, "cm"),
+    legend.position = "right"
+  )
+
+# Population map
+map_population <- ggplot(model_data) +
+  geom_sf(aes(fill = pop_k), color = "white", linewidth = 0.2) +
+  scale_fill_distiller(name = "Population", palette = "Blues", direction = 1) +
+  labs(
+    title = "Population by District",
+    subtitle = "(thousands)"
+  ) +
+  common_theme
+
+# Raw police deaths
+map_deaths <- ggplot(model_data) +
+  geom_sf(aes(fill = n), color = "white", linewidth = 0.2) +
+  scale_fill_distiller(name = "Police Deaths", palette = "Purples", direction = 1) +
+  labs(
+    title = "Police-Related Deaths",
+    subtitle = "(totals)"
+  ) +
+  common_theme
+
+# Deaths per 1,000 inhabitants
+map_rate <- ggplot(model_data) +
+  geom_sf(aes(fill = deaths_per_100), color = "white", linewidth = 0.2) +
+  scale_fill_distiller(name = "Police Death Rate", palette = "Reds", direction = 1) +
+  labs(
+    title = "Police-Related Deaths",
+    subtitle = "(per 1,000 Inhabitants)"
+  ) +
+  common_theme
+
+# LISA cluster map
+map_lisa <- ggplot(deaths_map) +
+  geom_sf(aes(fill = cluster_type), color = "white", size = 0.2) +
+  scale_fill_manual(
+    values = c(
+      "High-High" = "#67000d",
+      "Low-Low" = "#08519c",
+      "High-Low" = "#a50f15",
+      "Low-High" = "#3182bd",
+      "Not Significant" = "#f0f0f0"
+    ),
+    name = "LISA Cluster"
+  ) +
+  labs(
+    title = "Local Spatial Autocorrelation (LISA)",
+    subtitle = "Log-transformed Police Death Rate per Capita",
+    caption = "Clusters based on Local Moran's I"
+  ) +
+  common_theme
+
+# Arrange 2x2 layout
+(map_population | map_deaths) /
+(map_rate | map_lisa) +
+  plot_annotation(
+    title = "Police Lethality and Demographics in São Paulo",
+    caption = "Source: SSP & IBGE 2022",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.caption = element_text(size = 10, hjust = 1),
+      plot.margin = margin(t = 20, r = 10, b = 10, l = 10)
+    )
+  )
+
+```
+
+
+## 6. Fit Spatial Models with Internal Predictors Only
+
+```{r spatial-model-internal}
+model_data <- deaths_map |> 
+  drop_na(pct_branca, pct_preta, pct_parda, pct_masc, avg_age, pct_pm)
+
+model_data <- model_data |> 
+  mutate(across(c(pct_branca, pct_preta, pct_parda, pct_masc, avg_age, pct_pm), scale))
+
+nb <- poly2nb(model_data)
+lw <- nb2listw(nb, style = "W")
+
+ols_model <- lm(deaths_log ~ pct_parda + pct_branca + pct_preta + pct_masc + avg_age + pct_pm, data = model_data)
+summary(ols_model)
+moran.test(residuals(ols_model), lw)
+
+lag_model <- lagsarlm(deaths_log ~ pct_parda + pct_branca + pct_preta + pct_masc + avg_age + pct_pm, data = model_data, listw = lw)
+summary(lag_model)
+
+error_model <- errorsarlm(deaths_log ~ pct_parda + pct_branca + pct_preta + pct_masc + avg_age + pct_pm, data = model_data, listw = lw)
+summary(error_model)
+```
+
+## 7. Add Income and Favela Area
+
+```{r add-income-favela}
+# 1. Load shapefile
+data_favela <- st_read("../data-raw/SIRGAS_SHP_favela/SIRGAS_SHP_favela.shp")
+
+# 2. Harmonize CRS
+st_crs(data_favela) <- st_crs(model_data)
+
+# 3. Total district area
+model_data <- model_data |> 
+  mutate(area_total = st_area(geometry))
+
+# 4. Intersect favelas with districts
+favela_intersection <- st_intersection(data_favela, model_data)
+
+# 5. Compute favela area within each district
+favela_area <- favela_intersection |> 
+  mutate(favela_area = st_area(geometry)) |> 
+  group_by(ds_nome) |> 
+  summarise(total_favela_area = sum(favela_area), .groups = "drop") |> 
+  st_drop_geometry()
+
+# 6. Sanitize model_data: remove any existing 'total_favela_area' to avoid ambiguity
+model_data <- model_data |> select(-any_of("total_favela_area"))
+
+# 7. Join and compute percent favela area
+model_data <- model_data |> 
+  left_join(favela_area, by = "ds_nome") |> 
+  mutate(
+    total_favela_area = ifelse(is.na(total_favela_area), 0, as.numeric(total_favela_area)),
+    pct_favela = (total_favela_area / as.numeric(area_total)) * 100
+  ) |> 
+  mutate(pct_favela = scale(pct_favela))
+
+# 8. Add income data
+model_data <- model_data |> 
+  mutate(income_per_capita = scale(income_per_capita)) |>
+  mutate(pop_density = pop_total / as.numeric(area_total)) |>
+  mutate(pop_density = scale(pop_density))
+
+# 9. Extended spatial model
+extended_model <- lagsarlm(
+  deaths_log ~ pct_parda + pct_preta + pct_masc + avg_age + pct_pm + pct_favela + income_per_capita + pop_density,
+  data = model_data, listw = lw
+)
+summary(extended_model)
+```
+
+
+
