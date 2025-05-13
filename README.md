@@ -1,32 +1,37 @@
 # Geospatial Analysis of Police Lethality in São Paulo
 
 <p align="center">
-  <img src="images/police_lethality_maps.png" alt="Population, raw deaths, deaths per 1 000 inhabitants, and LISA clusters" width="800">
+
+<img src="images/police_lethality_maps.png" alt="Population, raw deaths, deaths per 1 000 inhabitants, and LISA clusters" width="800"/>
+
 </p>
 
-**Authors:**  
-Luis Ramirez – @lramir14 • Monserrat López – @Monlo • Rodrigo Dornelles – @rfdornelles
-**Last updated:** 2025-05-12  
+**Authors:**\
+[Luis Fernando Ramirez](http://www.github.com/lramir14) \| [Monserrat López Perez](http://www.github.com/Monlo) \| [Rodrigo Dornelles](http://www.github.com/rfdornelles)
 
----
+**Last updated:** 2025-05-12
+
+This analysis was made as part of the course **GRAD-E1457 - Geospatial Analysis for Data Science**, taught by Prof. [Alexandra Kapp](https://scholar.google.de/citations?user=Uq5J4p8AAAAJ) in the [Hertie School Master of Data Science for Public Policy](https://www.hertie-school.org/en/mds) Program
+
+------------------------------------------------------------------------
 
 ## 📝 Project Summary
 
-Brazil’s state of São Paulo reports hundreds of police-related deaths each year, but the *where* and *why* behind those deaths remain poorly understood.  
+Brazil’s state of São Paulo reports hundreds of police-related deaths each year, but the *where* and *why* behind those deaths remain poorly understood.\
 Using 2022 census micro-data, detailed shapefiles, and incident-level police-mortality records (2013-2025), we:
 
-1. **Geocode** individual deaths and assign them to districts.  
-2. **Distribute** census population and household income down to census-sector slices that align with district borders.  
-3. **Map** raw counts, per-capita death rates, and Local Indicators of Spatial Association (LISA) clusters.  
-4. **Model** lethal-force risk with spatial-lag and spatial-error SAR models, testing demographic, income, and urban-form predictors.  
+1.  **Geocode** individual deaths and assign them to districts.\
+2.  **Distribute** census population and household income down to census-sector slices that align with district borders.\
+3.  **Map** raw counts, per-capita death rates, and Local Indicators of Spatial Association (LISA) clusters.\
+4.  **Model** lethal-force risk with spatial-lag and spatial-error SAR models, testing demographic, income, and urban-form predictors.
 
 The full workflow is scripted in reproducible **R Markdown** (`R/PoliceKillingsFinal.Rmd`) and documented below.
 
----
+------------------------------------------------------------------------
 
 ## 📁 Repository Layout
 
-```
+```         
 
 ├── R/                         # Helper R scripts & functions
 ├── R/PoliceKillingsFinal.Rmd  # Main analysis / report (this file is the source of the results)
@@ -45,49 +50,50 @@ The full workflow is scripted in reproducible **R Markdown** (`R/PoliceKillingsF
 └── README.md                  # ← you are here
 ```
 
----
+------------------------------------------------------------------------
 
 ## ⚙️ Quick-start
 
-1. **Clone** the repo:
+1.  **Clone** the repo:
 
-   ```bash
-   git clone https://github.com/rfdornelles/geospatial_assignments.git
-   cd geospatial_assignments
-   ```
+    ``` bash
+    git clone https://github.com/rfdornelles/geospatial_assignments.git
+    cd geospatial_assignments
+    ```
 
-2. **Open R** (≥ 4.2) and knit `R/PoliceKillingsFinal.Rmd`:
+2.  **Open R** (≥ 4.2) and knit `R/PoliceKillingsFinal.Rmd`:
 
-   ```r
-   rmarkdown::render("R/PoliceKillingsFinal.Rmd")
-   ```
+    ``` r
+    rmarkdown::render("R/PoliceKillingsFinal.Rmd")
+    ```
 
-   The first chunk automatically installs and loads all required packages:
+    The first chunk automatically installs and loads all required packages:
 
-   ```r
-   c("here", "dplyr", "tidyr", "readr", "ggplot2", "sf", "lubridate",
-     "viridis", "ggthemes", "spdep", "spatialreg", "patchwork",
-     "janitor", "readxl", "stringr", "broom", "grid")
-   ```
+    ``` r
+    c("here", "dplyr", "tidyr", "readr", "ggplot2", "sf", "lubridate",
+      "viridis", "ggthemes", "spdep", "spatialreg", "patchwork",
+      "janitor", "readxl", "stringr", "broom", "grid")
+    ```
 
-3. **Outputs**:  
-   - Cleaned RDS files → `data/`  
-   - Figures → `images/` 
-   - An HTML report mirroring the Rmd → `R/PoliceKillingsFinal.html`
+3.  **Outputs**:
 
----
+    -   Cleaned RDS files → `data/`\
+    -   Figures → `images/`
+    -   An HTML report mirroring the Rmd → `R/PoliceKillingsFinal.html`
+
+------------------------------------------------------------------------
 
 ## 🗺️ Key Results
 
 **Download full poster →** [`poster/final_poster.pdf`](poster/final_poster.pdf)
 
----
+------------------------------------------------------------------------
 
 ## 📊 Reproducing the Spatial Models
 
 The SAR models use queen-contiguity neighbours via `spdep`:
 
-```r
+``` r
 nb <- spdep::poly2nb(deaths_map)
 lw <- spdep::nb2listw(nb, style = "W")
 lag_model <- spatialreg::lagsarlm(
@@ -101,23 +107,23 @@ summary(lag_model)
 
 See Section 6 & 7 of `R/PoliceKillingsFinal.Rmd` for full diagnostics, Moran’s I on residuals, and coefficient tables.
 
----
+------------------------------------------------------------------------
 
 ## 👩‍💻 Contribution Statement
 
-All authors contributed equally.  
-- **Modeling:** Luis Ramirez  
-- **Visualization:** Monserrat López  
-- **Data wrangling:** Rodrigo Dornelles  
+All authors contributed equally.\
+- **Modeling:** Luis Ramirez\
+- **Visualization:** Monserrat López\
+- **Data wrangling:** Rodrigo Dornelles
 
----
+------------------------------------------------------------------------
 
 ## 📄 License & Citation
 
-- Code: **MIT License** (see `LICENSE`).  
-- Cite this project as:
+-   Code: **MIT License** (see `LICENSE`).\
+-   Cite this project as:
 
-```bibtex
+``` bibtex
 @misc{ramirez2025police_lethality_sp,
   author   = {Luis Fernando Ramirez Ruiz and Monserrat López Perez and Rodrigo Dornelles},
   title    = {Geospatial Analysis of Police Lethality in São Paulo},
@@ -126,14 +132,14 @@ All authors contributed equally.
 }
 ```
 
----
+------------------------------------------------------------------------
 
 ## 🙏 Acknowledgments
 
-- **SSP-SP** for releasing incident-level lethality data.  
-- **IBGE** 2022 Census team for open micro-data & shapefiles.  
-- **R-Spatial** community for `sf`, `spdep`, and `spatialreg`.  
+-   **SSP-SP** for releasing incident-level lethality data.\
+-   **IBGE** 2022 Census team for open micro-data & shapefiles.\
+-   **R-Spatial** community for `sf`, `spdep`, and `spatialreg`.
 
----
+------------------------------------------------------------------------
 
 <sub><sup>Questions or ideas? Open an issue!</sup></sub>
