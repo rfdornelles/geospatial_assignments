@@ -196,6 +196,8 @@ map_rate <- ggplot(model_data) +
   )
 
 
+# ggsave(filename = "../images/police_lethality_maps.png", width = 12, height = 10, dpi = 600)
+
 ```
 
 ## 5. Test for Spatial Autocorrelation
@@ -302,6 +304,7 @@ map_lisa <- ggplot(deaths_map) +
     )
   )
 
+ggsave("../images/police_lethality_maps.png", width = 12, height = 10, dpi = 600)
 ```
 
 
@@ -377,5 +380,7 @@ extended_model <- lagsarlm(
 summary(extended_model)
 ```
 
+## 8. Statement of Contribution
 
+All authors contributed equally to the research and writing of this paper. In addition, Luis Ramirez led the modeling, Monserrat López led the visualization, and Rodrigo Dornelles led the data wrangling. All authors have read and approved the final version of the poster and this analysis.
 
