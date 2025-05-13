@@ -17,8 +17,7 @@ This analysis was made as part of the course **GRAD-E1457 - Geospatial Analysis 
 
 ## 📝 Project Summary
 
-Brazil’s state of São Paulo reports hundreds of police-related deaths each year, but the *where* and *why* behind those deaths remain poorly understood.\
-Using 2022 census micro-data, detailed shapefiles, and incident-level police-mortality records (2013-2025), we:
+Brazil’s state of São Paulo reports hundreds of police-related deaths each year, but the *where* and *why* behind those deaths remain poorly understood. Using 2022 census micro-data, detailed shapefiles, and incident-level police-mortality records (2013-2025), we:
 
 1.  **Geocode** individual deaths and assign them to districts.
 2.  **Distribute** census population and household income down to census-sector slices that align with district borders.
@@ -77,7 +76,7 @@ The full workflow is scripted in reproducible **R Markdown** (`R/PoliceKillingsF
 
 3.  **Outputs**:
 
-    -   Cleaned RDS files → `data/`\
+    -   Cleaned RDS files → `data/`
     -   Figures → `images/`
     -   An HTML report mirroring the Rmd → `R/PoliceKillingsFinal.html`
 
@@ -111,16 +110,13 @@ See Section 6 & 7 of `R/PoliceKillingsFinal.Rmd` for full diagnostics, Moran’s
 
 ## 👩‍💻 Contribution Statement
 
-All authors contributed equally.\
-- **Modeling:** Luis Ramirez\
-- **Visualization:** Monserrat López\
-- **Data wrangling:** Rodrigo Dornelles
+All authors contributed equally. - **Modeling:** Luis Ramirez - **Visualization:** Monserrat López - **Data wrangling:** Rodrigo Dornelles
 
 ------------------------------------------------------------------------
 
 ## 📄 License & Citation
 
--   Code: **MIT License** (see `LICENSE`).\
+-   Code: **MIT License** (see `LICENSE`).
 -   Cite this project as:
 
 ``` bibtex
@@ -136,8 +132,8 @@ All authors contributed equally.\
 
 ## 🙏 Acknowledgments
 
--   **SSP-SP** for releasing incident-level lethality data.\
--   **IBGE** 2022 Census team for open micro-data & shapefiles.\
+-   **SSP-SP** for releasing incident-level lethality data.
+-   **IBGE** 2022 Census team for open micro-data & shapefiles.
 -   **R-Spatial** community for `sf`, `spdep`, and `spatialreg`.
 
 ------------------------------------------------------------------------
