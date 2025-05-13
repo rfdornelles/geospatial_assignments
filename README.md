@@ -20,9 +20,9 @@ This analysis was made as part of the course **GRAD-E1457 - Geospatial Analysis 
 Brazil’s state of São Paulo reports hundreds of police-related deaths each year, but the *where* and *why* behind those deaths remain poorly understood.\
 Using 2022 census micro-data, detailed shapefiles, and incident-level police-mortality records (2013-2025), we:
 
-1.  **Geocode** individual deaths and assign them to districts.\
-2.  **Distribute** census population and household income down to census-sector slices that align with district borders.\
-3.  **Map** raw counts, per-capita death rates, and Local Indicators of Spatial Association (LISA) clusters.\
+1.  **Geocode** individual deaths and assign them to districts.
+2.  **Distribute** census population and household income down to census-sector slices that align with district borders.
+3.  **Map** raw counts, per-capita death rates, and Local Indicators of Spatial Association (LISA) clusters.
 4.  **Model** lethal-force risk with spatial-lag and spatial-error SAR models, testing demographic, income, and urban-form predictors.
 
 The full workflow is scripted in reproducible **R Markdown** (`R/PoliceKillingsFinal.Rmd`) and documented below.
@@ -128,7 +128,7 @@ All authors contributed equally.\
   author   = {Luis Fernando Ramirez Ruiz and Monserrat López Perez and Rodrigo Dornelles},
   title    = {Geospatial Analysis of Police Lethality in São Paulo},
   year     = {2025},
-  url      = {https://github.com/<your-org>/police-lethality-sp}
+  url      = {https://github.com/rfdornelles/geospatial_assignments}
 }
 ```
 
