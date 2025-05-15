@@ -9,13 +9,17 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 
+Violence remains a pressing issue in Brazil. In 2023, the country recorded 38,595 homicides, with **São Paulo being one of the states with the most murders recorded**. While violence in Brazil is often attributed to organized crime, **a substantial portion stems from the State.** In 2023 alone, 504 people were murdered by the police in São Paulo State, an average of **1.3 victims per day.**
+
+These figures raise questions about the nature of state violence: **where** it happens, under **what conditions**, and **who** is affected the most. This research aims to analyze the **spatial distribution of police killings** in São Paulo city and identify the factors that contribute to police lethality in the city.
+
 ## 1. Load Libraries
 
 ```{r libraries}
 packages <- c(
   "here", "dplyr", "tidyr", "readr", "ggplot2", "sf", "lubridate",
   "viridis", "ggthemes", "spdep", "spatialreg", "patchwork",
-  "janitor", "readxl", "stringr", "broom", "grid"  
+  "janitor", "readxl", "stringr", "broom", "grid", "GGally", "knitr"  
 )
 
 suppressMessages({
@@ -29,6 +33,8 @@ cat("packages ready.\n")
 ```
 
 ## 2. Load and Clean Police Deaths Data
+
+First, we loaded and cleaned the raw Excel file containing police-related deaths. We retained only cases from São Paulo city, fix date formats, drop irrelevant columns, and remove rows with invalid or missing coordinates.
 
 ```{r clean-data}
 df_mortes_policia <- read_excel(here("data-raw", "MortesDecorrentesIntervencaoPolicial_2025.xlsx")) |> 
@@ -46,13 +52,21 @@ write_rds(df_mortes_policia, here("data", "mortes_policia_clean.rds"))
 
 ## 3. Distribute Census 2022 Population by District and Income
 
+To calculate population-normalized indicators of police violence, we need accurate estimates of how many people live in each district. However, population data is only available at the finer census sector level. In this section, we proportionally distribute census population and income estimates from sectors to districts, using spatial intersection and area-weighted allocation. We also bring in average household income data (v002) to estimate per capita income by district.
+
+This step is essential for calculating per capita indicators (like police deaths per inhabitant) and for incorporating socioeconomic variables into our spatial regression later on.
+
 ```{r census-distribution}
+
+# 1. Load 2022 census sectors and assign correct projection  
 df_censo2022 <- read_sf(here("data-raw", "SIRGAS_SHP_setorcensitario2022", "SIRGAS_SHP_setorcensitario2022_polygon.shp")) |> 
   st_set_crs(31983)
 
+# 2. Load official district boundaries
 df_distritos <- read_sf(here("data-raw", "shapefile_distrito", "SIRGAS_SHP_distrito.shp")) |> 
   st_set_crs(31983)
 
+# 3. Load household income data and join to census sectors
 tbl_income <- read_csv(here("data-raw", "bq_data_income_setor_censitario.csv")) |> 
   mutate(sc_setor = as.character(id_setor_censitario)) |> 
   filter(!is.na(v002)) |> 
@@ -60,11 +74,13 @@ tbl_income <- read_csv(here("data-raw", "bq_data_income_setor_censitario.csv")) 
 
 df_censo2022 <- df_censo2022 |> left_join(tbl_income)
 
+# 4. Compute original area of each sector
 area_tbl <- df_censo2022 |> 
   select(sc_setor) |> 
   mutate(area_orig = st_area(geometry) |> as.numeric()) |> 
   st_drop_geometry()
 
+# 5. Intersect sectors and districts: sectors may cross multiple districts
 sect_split <- st_intersection(
   df_censo2022 |> select(sc_setor, sc_populac, month_house_income),
   df_distritos |> select(ds_nome)
@@ -81,6 +97,7 @@ sect_split <- st_intersection(
   ) |> 
   ungroup()
 
+# 6. Aggregate population and income by district
 pop_distritos <- sect_split |> 
   st_drop_geometry() |> 
   group_by(ds_nome) |> 
@@ -91,6 +108,7 @@ pop_distritos <- sect_split |>
     .groups = "drop"
   )
 
+# 7. Join population and income back into districts
 df_distritos_pop <- df_distritos |> 
   left_join(pop_distritos, by = "ds_nome") |> 
   mutate(pop_total = replace_na(pop_total, 0))
@@ -99,8 +117,11 @@ write_rds(df_distritos_pop, here("data", "distritos_pop_2022.rds"))
 ```
 
 ## 4. Join with Districts and Compute Rates
+In this step, we link individual-level police death records to administrative districts, aggregate the data, and use the previous information to compute normalized metrics like death rates per inhabitant. We also extract demographic characteristics of the victims at the district level to serve as potential predictors in later spatial models.
 
 ```{r join-districts}
+
+# 1. Load cleaned police death data from prior step
 df_clean <- read_rds(here("data", "mortes_policia_clean.rds")) |> 
   mutate(data_fato = as.Date(data_fato),
          idade_pessoa = as.numeric(idade_pessoa),
@@ -109,37 +130,116 @@ df_clean <- read_rds(here("data", "mortes_policia_clean.rds")) |>
          ano = year(data_fato),
          mes = month(data_fato, label = TRUE, abbr = TRUE))
 
+# 2. Convert tabular data into spatial points (sf object)
 deaths_sf <- df_clean |> filter(!is.na(latitude), !is.na(longitude)) |> 
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326) |> st_transform(31983)
 
-# Join
+# 3. Perform spatial join: assign each death to a district
 df_spatial_join <- st_join(deaths_sf, df_distritos_pop, join = st_within)
 
+# 4. Aggregate individual records to the district level
 deaths_map <- df_distritos_pop |> 
   left_join(
     df_spatial_join |> st_drop_geometry() |> 
       group_by(ds_nome) |> 
       summarise(
         n = n(),
-        avg_age = mean(idade_pessoa, na.rm = TRUE),
-        pct_masc = mean(sexo_pessoa == "Masculino", na.rm = TRUE),
-        pct_parda = mean(cor_pele == "Parda", na.rm = TRUE),
-        pct_branca = mean(cor_pele == "Branca", na.rm = TRUE),
-        pct_preta = mean(cor_pele == "Preta", na.rm = TRUE),
+        avg_age = mean(idade_pessoa, na.rm = TRUE), # Average age of victims in the district
+        pct_masc = mean(sexo_pessoa == "Masculino", na.rm = TRUE), # Proportion of male victims  
+        pct_parda = mean(cor_pele == "Parda", na.rm = TRUE),  # Proportion of victims identified as parda (mixed race)
+        pct_branca = mean(cor_pele == "Branca", na.rm = TRUE), # Proportion of white victims  
+        pct_preta = mean(cor_pele == "Preta", na.rm = TRUE),   # Proportion of Black victims
         pct_pm = mean(coorporacao == "PM", na.rm = TRUE)
-      ),
-    by = "ds_nome"
+      ), # Proportion of deaths involving the Polícia Militar (state military police)
+    by = "ds_nome" # Grouping by district name
   ) |> 
   mutate(
     n = replace_na(n, 0),
-    deaths_per_hab = n / pop_total,
-    deaths_log = log1p(deaths_per_hab)
+    deaths_per_hab = n / pop_total, # Normalize by population
+    deaths_log = log1p(deaths_per_hab) # Log-transform (for modeling later)
   )
 ```
 
-## 6. Maps
+The log transformation of the normalized death rate per district reduces skewness of the death rate variable, which is used as dependent variable later in the modeling. As shown in the following graph, the distribution of death rates is right-skewed — many districts have low values, but a few have much higher rates. The Log transformation helps meet regression assumptions like normality of residuals and homoscedasticity (equal variance).
 
 ```{r}
+# Plot original distribution
+ggplot(deaths_map, aes(x = deaths_per_hab)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  labs(
+    title = "Original Distribution: Deaths per Capita",
+    x = "Deaths per Inhabitant",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+## 5. Descriptives
+Before modeling police lethality across São Paulo’s districts, we explored the distribution and relationships of the variables included in our analysis. These variables represent both characteristics of the victims and the district context, chosen based on theoretical relevance and data availability.
+
+```{r}
+
+# Select variables used in the extended model
+vars <- deaths_map |> 
+  select(
+    deaths_per_hab,
+    pct_parda, pct_preta, pct_masc, avg_age,
+    pct_pm, income_per_capita
+  )
+
+# Summary table
+summary_stats <- vars |> 
+  st_drop_geometry() |> 
+  summarise(across(everything(), list(mean = ~mean(.x, na.rm = TRUE),
+                                      sd = ~sd(.x, na.rm = TRUE)))) |> 
+  pivot_longer(everything(), names_to = c("variable", ".value"), names_sep = "_")
+
+# Density plots
+vars_long <- vars |> 
+  st_drop_geometry() |> 
+  pivot_longer(everything()) 
+
+ggplot(vars_long, aes(x = value)) +
+  geom_density(fill = "steelblue", alpha = 0.6) +
+  facet_wrap(~name, scales = "free", ncol = 3) +
+  labs(title = "Distribution of Model Variables", x = NULL, y = "Density") +
+  theme_minimal(base_size = 11)
+
+# Correlation matrix
+ggcorr(
+  vars |> st_drop_geometry(),
+  label = TRUE, label_alpha = TRUE, label_round = 2,
+  name = "Corr",
+  layout.exp = 1
+) + labs(title = "Correlation Matrix of Predictor Variables")
+
+model_table <- tibble::tibble(
+  Variable = c("Deaths per capita", "% Parda", "% Preta", "% Masculino", "Average Age", "% PM", "Income per capita"),
+  Mean = c(0.00027, 0.60, 0.10, 0.99, 24.64, 0.93, 790.27),
+  SD = c(0.00015, 0.13, 0.07, 0.03, 3.10, 0.09, 611.06),
+  Description = c(
+    "Police-caused deaths per inhabitant (district-level)",
+    "Share of mixed-race victims",
+    "Share of Black victims",
+    "Share of male victims",
+    "Mean age of victims",
+    "Share of deaths involving Polícia Militar",
+    "Average monthly income per person in the district"
+  )
+)
+
+kable(model_table, digits = 2, caption = "Table 1: Mean and Standard Deviation of Model Variables")
+
+```
+
+As shown in the descriptives, most victims are young (avg. age ≈ 24.6) and overwhelmingly male (≈ 99%). Racially, the average district sees a predominance of parda victims (mean ≈ 60%) followed by preta (≈ 10%). These figures confirm that racialized and gendered patterns dominate police lethality in São Paulo. The proportion of deaths involving the Polícia Militar (PM) is very high (mean ≈ 93%), confirming its central role in state violence.
+
+## 6. Maps
+
+To understand the spatial distribution of the variables, we plot the three maps: population, the total number of police related deaths, and the deaths per cápita. This provide complementary perspectives on the spatial distribution of police-related deaths in São Paulo.
+
+```{r map-grid, fig.width=12, fig.height=5, message=FALSE, warning=FALSE}
+
 model_data <- deaths_map |> 
   drop_na(deaths_per_hab, pct_parda, pct_branca, pct_preta, pct_masc, avg_age, pct_pm)
 
@@ -200,7 +300,14 @@ map_rate <- ggplot(model_data) +
 
 ```
 
-## 5. Test for Spatial Autocorrelation
+As shown in the maps, districts in the southern and eastern zones tend to have the highest population densities. These areas include many peripheral neighborhoods historically associated with lower socioeconomic status and limited public services.
+
+On the other hand, deaths are concentrated in the same high-population districts, but this raw count does not account for differences in population size. Central and western districts, despite high visibility, show comparatively fewer absolute cases.When deaths are normalized by population, a different pattern emerges. Several less populous districts in the southern periphery and eastern edge exhibit the highest rates of police lethality, suggesting disproportionately aggressive policing in areas with high social vulnerability. Meanwhile, wealthier central and western districts show low rates despite comparable population sizes.
+This contrast between raw counts and normalized rates highlights the importance of using population-adjusted indicators to reveal patterns of disproportionate state violence that may otherwise remain obscured.
+
+## 7. Test for Spatial Autocorrelation
+
+To assess whether police lethality is randomly distributed across São Paulo or spatially clustered, we conducted both global and local tests of spatial autocorrelation using the log-transformed death rate.
 
 ```{r lisa-and-global-moran}
 nb <- poly2nb(deaths_map)
@@ -222,14 +329,23 @@ deaths_map <- deaths_map |>
     )
   )
 
-
 head(lisa)
 
 ```
 
+The Global Moran’s I test yielded a statistic of 0.217 (p < 0.001), indicating a **statistically significant** positive spatial autocorrelation. Districts with high (or low) rates of police killings tend to be located near other districts with similarly high (or low) values — not randomly scattered across the city.
 
-```{r}
+This result justifies the use of spatial regression models to account for these spatial dependencies and avoid biased or inefficient estimates from ordinary least squares (OLS) methods.
 
+To identify where spatial clustering occurs, we computed Local Moran’s I values for each district. These results were categorized into five cluster types:
+
+- High–High: Districts with high death rates surrounded by similarly high-rate neighbors
+- Low–Low: Districts with low death rates near others with low rates
+- High–Low: High-rate districts surrounded by low-rate neighbors
+- Low–High: Low-rate districts adjacent to high-rate ones
+- Not Significant: No meaningful local spatial structure
+
+```{r, fig.width=12, fig.height=10, message=FALSE, warning=FALSE}
 # Create helper theme to apply across all maps
 common_theme <- theme_map() +
   theme(
@@ -306,9 +422,21 @@ map_lisa <- ggplot(deaths_map) +
 
 ggsave("../images/police_lethality_maps.png", width = 12, height = 10, dpi = 600)
 ```
+The previous map integrates the visualization of the components of deaths per cápita, but also integrates the results of the LISA Clusters. 
 
+The local Moran’s I analysis confirms significant spatial clustering:
+- Six High–High clusters (dark red) are visible in the southwestern periphery, including the districts of Raposo Tavares, Rio Pequeno, Vila Sônia, 	
+Bom Retiro, Bras, Butantã, indicating districts with high death rates surrounded by others with similarly high rates, which are potential hotspots of police violence.
+- One clusters (dark blue) within the district of JARDIM PAULISTA appear in the north-central zone, suggesting more stable or protected areas where police violence is less frequent and less contagious spatially.
+Most districts show no statistically significant clustering (gray), implying localized variations not strong enough to form regional patterns.
 
-## 6. Fit Spatial Models with Internal Predictors Only
+## 8. Fit Models with Internal Predictors Only
+
+In this step, we estimate a set of spatial regression models to explain variation in the log-transformed rate of police-caused deaths across São Paulo’s districts. We begin by selecting internal predictors derived from the characteristics of the victims and the police force. These include the racial composition of victims (pct_parda, pct_preta, pct_branca), gender composition (pct_masc), average age of victims (avg_age), and the proportion of deaths involving the Polícia Militar (pct_pm). All variables are standardized to allow comparison of effect sizes.
+
+We first fit a standard **Ordinary Least Squares (OLS)** regression as a baseline. This allows us to assess whether any of the predictors are statistically significant and whether residuals show evidence of spatial autocorrelation. We use Moran’s I on the residuals to test for spatial dependence. If residuals are still spatially clustered, it indicates that the OLS model is misspecified and that a spatial model is needed.
+
+Next, we fit two spatial models. The **spatial lag model (SAR)** includes a spatially lagged dependent variable, capturing the possibility that a district's police death rate is influenced by its neighbors. This can reflect policing spillovers or regional diffusion of violence. The **spatial error model (SEM)**, on the other hand, assumes spatial dependence in the error term — accounting for unmeasured or latent spatial processes that affect the outcome but are not directly included in the model.
 
 ```{r spatial-model-internal}
 model_data <- deaths_map |> 
@@ -331,7 +459,26 @@ error_model <- errorsarlm(deaths_log ~ pct_parda + pct_branca + pct_preta + pct_
 summary(error_model)
 ```
 
-## 7. Add Income and Favela Area
+The results shown that in the **OLS model** none of the internal predictors were statistically significant. The adjusted R² is negative (−0.024), indicating poor model fit. Most importantly, the residuals from the OLS model exhibit significant spatial autocorrelation (Moran’s I = 0.18, p < 0.01), suggesting that key spatial dependencies are not accounted for. This confirms the need to apply spatial regression techniques.
+
+In the **spatial lag model**, a spatial autoregressive term (ρ = 0.405, p < 0.01) is included to account for the influence of neighboring districts. Although this model significantly improves fit compared to OLS (likelihood ratio test p = 0.0036), the individual predictors remain statistically insignificant. The presence of a strong spatial lag suggests that police lethality is not purely a local phenomenon but likely influenced by other social patterns.
+
+The spatial error model also performs better than OLS, with a significant lambda term (λ = 0.396, p < 0.01) and lower AIC. Like the lag model, it confirms the presence of unobserved spatial processes that affect the outcome. Again, none of the internal variables are individually significant, but the improved residual structure and model diagnostics indicate that spatial models provide a more appropriate framework for capturing the underlying pattern.
+
+Together, these results suggest that district-level victim characteristics and policing force composition alone do not explain the spatial distribution of police violence. However, the spatial structure of the phenomenon is statistically robust. In the following section, we try to include models that account for external structural variables (e.g., income, favela coverage, and urban density) to better understand the social geography of lethal policing.
+
+## 9. Add Income and Favela Area
+
+While previous models focused on internal victim and policing characteristics, they failed to explain the spatial variation in police lethality. In this section, we extend the spatial lag model by incorporating structural context variables that capture dimensions of urban inequality and spatial marginalization.
+
+We focus on three district-level indicators:
+
+- Favela concentration (pct_favela): The share of district land occupied by officially designated favelas, derived from a spatial intersection between favela polygons and district geometries. This variable captures territorial stigmatization and marginalization, which may shape the intensity of policing and state violence.
+
+- Income per capita (income_per_capita): Standardized mean household income from the redistributed 2022 Census data. It reflects socioeconomic vulnerability, with lower-income areas potentially receiving more aggressive or militarized policing.
+
+- Population density (pop_density): The number of residents per square kilometer, included to control for urban form and exposure. Denser areas may have different policing dynamics than low-density, peripheral neighborhoods.
+All three variables are standardized and added to the previously used set of internal predictors.
 
 ```{r add-income-favela}
 # 1. Load shapefile
@@ -380,7 +527,20 @@ extended_model <- lagsarlm(
 summary(extended_model)
 ```
 
-## 8. Statement of Contribution
+The extended spatial lag model confirms the importance of spatial dependence in explaining police lethality in São Paulo. The spatial lag parameter (ρ = 0.395, p < 0.001) is statistically significant, indicating that a district’s police death rate is correlated with those of its neighbors — a finding consistent with the earlier models. This spatial spillover suggests that patterns of police violence are not isolated, but may be driven by broader regional or institutional dynamics.
+
+However, none of the individual predictors are statistically significant, including the newly added structural variables: pct_favela, income_per_capita, and pop_density. While these variables slightly improve model fit (log-likelihood = 720.15; AIC = -1418.3), their p-values remain above 0.2, suggesting weak or unstable associations with the outcome.
+
+This result points to two possible insights. First, police lethality is likely shaped by complex, spatially structured factors that are not fully captured by district-level averages — such as organized crime presence, police deployment strategies, or other crimes occurences. Second, the consistently significant spatial lag term reinforces the idea that police violence in São Paulo functions as a regionalized practice, rather than a purely local response to demographic or structural conditions.
+
+## 10. Conclusions
+
+This analysis shows that police-related deaths in São Paulo are not randomly distributed, but instead form spatial clusters, particularly in the southeastern periphery — areas historically marked by social vulnerability and state neglect. The spatial lag model significantly outperforms the standard OLS approach, confirming the presence of strong spatial dependence in the distribution of police lethality.
+
+However, none of the individual district-level predictors — including race, gender, age, or the proportion of incidents involving the Polícia Militar — were statistically significant. Even after incorporating structural variables such as favela coverage, income per capita, and population density, the models failed to identify clear local drivers. Instead, the most consistent finding across all models is that spatial proximity itself matters: high police lethality in one district increases the likelihood of high lethality in its neighbors.
+
+Future research should integrate contextual variables such as local crime rates and homicide hotspots, presence and activity of organized crime groups, and police operations, jurisdictional policies, or shifts in command structures. Such data would help disentangle whether police lethality is driven by crime control, territorial conflict, or broader patterns of racialized state violence.
+
+## 11. Statement of Contribution
 
 All authors contributed equally to the research and writing of this paper. In addition, Luis Ramirez led the modeling, Monserrat López led the visualization, and Rodrigo Dornelles led the data wrangling. All authors have read and approved the final version of the poster and this analysis.
-
